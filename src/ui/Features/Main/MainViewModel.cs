@@ -24562,16 +24562,15 @@ public partial class MainViewModel :
 
         // For ffmpeg, ask it for machine-readable progress on stdout so we can show a real percentage
         // instead of a static "Extracting wave info..." label. We need the total media duration to turn
-        // ffmpeg's "out_time_us" into a percent; read it here on the UI thread.
+        // ffmpeg's "out_time_us" into a percent, but on video open the player is usually still loading
+        // the file here and reports 0 - so progress is always enabled and the handler resolves the
+        // duration lazily once a source (player or media info) knows it.
         var totalDurationSeconds = 0.0;
         if (encoderName.StartsWith("FFmpeg", StringComparison.OrdinalIgnoreCase))
         {
             totalDurationSeconds = GetVideoPlayerControl()?.VideoPlayer?.Duration ?? 0;
-            if (totalDurationSeconds > 0)
-            {
-                process.StartInfo.Arguments = "-nostats -progress pipe:1 " + process.StartInfo.Arguments;
-                process.StartInfo.RedirectStandardOutput = true;
-            }
+            process.StartInfo.Arguments = "-nostats -progress pipe:1 " + process.StartInfo.Arguments;
+            process.StartInfo.RedirectStandardOutput = true;
         }
 
 #pragma warning disable CS4014 // fire-and-forget; extraction posts results back to the UI thread
@@ -24894,6 +24893,11 @@ public partial class MainViewModel :
     // (and marshal to the UI thread) when the whole-number percent actually changes.
     private int _lastWaveExtractPercent = -1;
 
+    // Duration resolved after extraction start, for runs that began before the player knew it
+    // (extraction is kicked off while the video is still loading, so Duration is often 0 then).
+    // Written only by the newest run's progress callbacks; reset when a new run starts.
+    private double _waveExtractResolvedDurationSeconds;
+
     // Monotonically increasing id for each extraction run. If a new run starts (e.g. the user
     // reopens the same video or switches audio track), an orphaned earlier ffmpeg can keep emitting
     // progress; only the newest run's id is allowed to update the label, so the percentage never
@@ -24968,6 +24972,7 @@ public partial class MainViewModel :
         IsWaveformGenerating = true;
         WaveformGeneratingText = Se.Language.Main.ExtractingWaveInfo;
         _lastWaveExtractPercent = -1;
+        _waveExtractResolvedDurationSeconds = 0;
 
         try
         {
@@ -25130,7 +25135,7 @@ public partial class MainViewModel :
     private void OnFfmpegWaveExtractProgress(string? line, double totalDurationSeconds, int extractionId)
     {
         if (extractionId != Volatile.Read(ref _waveExtractionSequence) ||
-            string.IsNullOrEmpty(line) || totalDurationSeconds <= 0 ||
+            string.IsNullOrEmpty(line) ||
             !line.StartsWith("out_time_us=", StringComparison.Ordinal))
         {
             return;
@@ -25141,6 +25146,38 @@ public partial class MainViewModel :
             microseconds < 0)
         {
             return;
+        }
+
+        // The run may have started before the player knew the media duration (video open kicks off
+        // extraction while the file is still loading). Resolve it lazily: by the time ffmpeg emits
+        // progress, the player or the parsed media info usually knows it. Until one of them does,
+        // skip the percent and leave the static "Extracting wave info..." label.
+        if (totalDurationSeconds <= 0)
+        {
+            totalDurationSeconds = Volatile.Read(ref _waveExtractResolvedDurationSeconds);
+            if (totalDurationSeconds <= 0)
+            {
+                try
+                {
+                    totalDurationSeconds = GetVideoPlayerControl()?.VideoPlayer?.Duration ?? 0;
+                }
+                catch
+                {
+                    // player may be mid-dispose; media info below (or a later callback) still works
+                }
+
+                if (totalDurationSeconds <= 0)
+                {
+                    totalDurationSeconds = (_mediaInfo?.Duration?.TotalSeconds ?? 0);
+                }
+
+                if (totalDurationSeconds <= 0)
+                {
+                    return;
+                }
+
+                Volatile.Write(ref _waveExtractResolvedDurationSeconds, totalDurationSeconds);
+            }
         }
 
         var processedSeconds = microseconds / 1_000_000.0;
