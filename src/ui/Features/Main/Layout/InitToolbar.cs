@@ -31,16 +31,8 @@ public static class InitToolbar
         };
     }
 
-    private static string _imagePath = string.Empty;
-
-    private static void EnsureImagePath()
-    {
-        _imagePath = UiTheme.ImageFolder;
-    }
-
     private static Grid CreateToolbar(MainViewModel vm)
     {
-        EnsureImagePath();
 
         var stackPanelLeft = new StackPanel
         {
@@ -365,7 +357,7 @@ public static class InitToolbar
                 var assaSeparator = MakeSeparator();
                 stackPanelLeft.Children.Add(assaSeparator);
                 assaSeparator.DataContext = vm;
-                assaSeparator.Bind(Visual.IsVisibleProperty, new Binding(nameof(vm.IsFormatAssa)) { Mode = BindingMode.TwoWay });
+                assaSeparator.Bind(Visual.IsVisibleProperty, new Binding(nameof(vm.IsFormatAssa)) { Mode = BindingMode.OneWay });
             }
 
             if (showSsaIcons)
@@ -373,7 +365,7 @@ public static class InitToolbar
                 var ssaSeparator = MakeSeparator();
                 stackPanelLeft.Children.Add(ssaSeparator);
                 ssaSeparator.DataContext = vm;
-                ssaSeparator.Bind(Visual.IsVisibleProperty, new Binding(nameof(vm.IsFormatSsa)) { Mode = BindingMode.TwoWay });
+                ssaSeparator.Bind(Visual.IsVisibleProperty, new Binding(nameof(vm.IsFormatSsa)) { Mode = BindingMode.OneWay });
             }
 
             if (showWebVttIcons)
@@ -381,7 +373,7 @@ public static class InitToolbar
                 var webVttSeparator = MakeSeparator();
                 stackPanelLeft.Children.Add(webVttSeparator);
                 webVttSeparator.DataContext = vm;
-                webVttSeparator.Bind(Visual.IsVisibleProperty, new Binding(nameof(vm.IsFormatWebVtt)) { Mode = BindingMode.TwoWay });
+                webVttSeparator.Bind(Visual.IsVisibleProperty, new Binding(nameof(vm.IsFormatWebVtt)) { Mode = BindingMode.OneWay });
             }
 
             isLastSeparator = true;
@@ -649,7 +641,8 @@ public static class InitToolbar
         // global Button style (UiTheme.ApplyWindowsClassicGray) adds a 1px border to
         // every button; this style is scoped to the toolbar grid so it strips the
         // border from the toolbar buttons only - buttons elsewhere keep their border.
-        if (UiTheme.ThemeName == UiTheme.ThemeNameClassic)
+        // Pastel's Button style colors the border too, which boxes in every icon.
+        if (UiTheme.ThemeName == UiTheme.ThemeNameClassic || UiTheme.ThemeName == UiTheme.ThemeNamePastel)
         {
             grid.Styles.Add(new Style(x => x.OfType<Button>())
             {
@@ -665,15 +658,10 @@ public static class InitToolbar
     }
 
     // Public so other windows (e.g. the spell-check completed dialog) can reuse the exact same
-    // themed/recolored toolbar icons. EnsureImagePath keeps it usable before the toolbar is built.
+    // themed/recolored toolbar icons using the current theme folder.
     public static Image MakeImage(string image)
     {
-        if (string.IsNullOrEmpty(_imagePath))
-        {
-            EnsureImagePath();
-        }
-
-        var filePath = Path.Combine(_imagePath, image + ".png");
+        var filePath = Path.Combine(UiTheme.ImageFolder, image + ".png");
         try
         {
             return new Image

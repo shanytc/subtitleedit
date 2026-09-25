@@ -18,9 +18,10 @@ namespace Nikse.SubtitleEdit.Logic.Config;
 public class Se
 {
     internal const int CurrentMacOsFontMigrationVersion = 1;
-    internal const int CurrentShortcutsMigrationVersion = 2;
+    internal const int CurrentShortcutsMigrationVersion = 4;
+    internal const int CurrentLayoutMigrationVersion = 2;
 
-    public static string Version { get; set; } = "v5.2.0-beta31";
+    public static string Version { get; set; } = "v5.3.0-beta12";
 
     public SeGeneral General { get; set; } = new();
     public List<SeShortCut> Shortcuts { get; set; } = new();
@@ -59,16 +60,6 @@ public class Se
     public string CustomSearch4Url { get; set; } = string.Empty;
     public string CustomSearch5Name { get; set; } = string.Empty;
     public string CustomSearch5Url { get; set; } = string.Empty;
-    public string Actor1 { get; set; } = "Actor 1";
-    public string Actor2 { get; set; } = "Actor 2";
-    public string Actor3 { get; set; } = "Actor 3";
-    public string Actor4 { get; set; } = "Actor 4";
-    public string Actor5 { get; set; } = "Actor 5";
-    public string Actor6 { get; set; } = "Actor 6";
-    public string Actor7 { get; set; } = "Actor 7";
-    public string Actor8 { get; set; } = "Actor 8";
-    public string Actor9 { get; set; } = "Actor 9";
-    public string Actor10 { get; set; } = "Actor 10";
     public SeFile File { get; set; } = new();
     public SeEdit Edit { get; set; } = new();
     public SeTools Tools { get; set; } = new();
@@ -183,7 +174,16 @@ public class Se
     public static string ThemesFolder => Path.Combine(DataFolder, "Themes");
     public static string FontsFolder => Path.Combine(DataFolder, "Fonts");
     public static string AutoBackupFolder => Path.Combine(DataFolder, "AutoBackup");
+
+    /// <summary>
+    /// Daily copies of Settings.json. A sub-folder of the subtitle auto-backup folder so the
+    /// non-recursive subtitle scan never lists them, and so both live under one place to clean.
+    /// </summary>
+    public static string SettingsBackupFolder => Path.Combine(AutoBackupFolder, "Settings");
     public static string FfmpegFolder => Path.Combine(DataFolder, "ffmpeg");
+
+    /// <summary>FFmpeg shared libraries (avcodec etc.) for the ffmpeg video player - kept apart from the static ffmpeg.exe above.</summary>
+    public static string FfmpegLibFolder => Path.Combine(FfmpegFolder, "lib");
     public static string TextToSpeechFolder => Path.Combine(DataFolder, "TextToSpeech");
     public static string SpeechToTextFolder => Path.Combine(DataFolder, "SpeechToText");
     public static string CrispAsrFolder => Path.Combine(DataFolder, "CrispASR");
@@ -455,8 +455,17 @@ public class Se
     /// Version 2: "Text box: Delete selection (no clipboard)" grew into the forward-delete
     /// (Delete key) command and was renamed; the persisted entry is renamed with it so user
     /// assignments - including a deliberately cleared binding - survive.
+    ///
+    /// Version 4 (macOS only): several defaults moved off standard macOS shortcuts (#14941, see
+    /// <see cref="ShortcutsMain.MacOsDefaultChanges"/>). Bindings still on the old default move to
+    /// the new one, unless another action already uses the new keys.
     /// </summary>
     internal void MigrateShortcuts()
+    {
+        MigrateShortcuts(OperatingSystem.IsMacOS());
+    }
+
+    internal void MigrateShortcuts(bool isMacOS)
     {
         var fromVersion = ShortcutsMigrationVersion.GetValueOrDefault();
         if (fromVersion >= CurrentShortcutsMigrationVersion)
@@ -489,6 +498,110 @@ public class Se
                 }
             }
         }
+
+        if (fromVersion < 3 && isMacOS)
+        {
+            // The old macOS default Option+Shift+Cmd+D never reached the app (#14508); the default
+            // gained Control, so move users who still sit on the dead chord onto the new one.
+            foreach (var shortcut in Shortcuts)
+            {
+                if (shortcut.ActionName == nameof(MainViewModel.OpenDataFolderCommand) &&
+                    IsSameKeys(shortcut.Keys, ["Win", "Alt", "Shift", "D"]))
+                {
+                    shortcut.Keys = ["Ctrl", "Win", "Alt", "Shift", "D"];
+                }
+            }
+        }
+
+        if (fromVersion < 4 && isMacOS)
+        {
+            MigrateMacOsDefaultShortcuts();
+        }
+    }
+
+    private void MigrateMacOsDefaultShortcuts()
+    {
+        var moves = new List<(SeShortCut Shortcut, string[] NewKeys)>();
+        foreach (var change in ShortcutsMain.MacOsDefaultChanges)
+        {
+            foreach (var shortcut in Shortcuts)
+            {
+                if (shortcut.ActionName == change.ActionName && IsSameKeys(shortcut.Keys, change.OldKeys))
+                {
+                    moves.Add((shortcut, change.NewKeys));
+                }
+            }
+        }
+
+        ApplyShortcutMoves(Shortcuts, moves);
+    }
+
+    /// <summary>
+    /// The way back, for shortcuts exported on macOS and imported on Windows/Linux: bindings on a
+    /// macOS-only default (<see cref="ShortcutsMain.MacOsDefaultChanges"/>, and the Control added
+    /// to "open data folder" in version 3) go to the default every system shares - still with the
+    /// macOS modifier names, the caller renames those. Without it Cmd+G (find next) and Ctrl+G
+    /// (go to line) both became Ctrl+G, and Delete no longer deleted lines.
+    /// </summary>
+    internal static void RevertMacOsDefaultShortcuts(List<SeShortCut> shortcuts)
+    {
+        var moves = new List<(SeShortCut Shortcut, string[] NewKeys)>();
+        foreach (var shortcut in shortcuts)
+        {
+            if (shortcut.Keys == null)
+            {
+                continue;
+            }
+
+            foreach (var change in ShortcutsMain.MacOsDefaultChanges)
+            {
+                if (change.NewKeys.Length > 0 && shortcut.ActionName == change.ActionName && IsSameKeys(shortcut.Keys, change.NewKeys))
+                {
+                    moves.Add((shortcut, change.OldKeys));
+                }
+            }
+
+            if (shortcut.ActionName == nameof(MainViewModel.OpenDataFolderCommand) &&
+                IsSameKeys(shortcut.Keys, ["Ctrl", "Win", "Alt", "Shift", "D"]))
+            {
+                moves.Add((shortcut, ["Win", "Alt", "Shift", "D"]));
+            }
+        }
+
+        ApplyShortcutMoves(shortcuts, moves);
+    }
+
+    private static void ApplyShortcutMoves(List<SeShortCut> shortcuts, List<(SeShortCut Shortcut, string[] NewKeys)> moves)
+    {
+        // Never create a duplicate binding: skip a move whose new keys are held by an action that
+        // stays put. Skipping one can block another (Cmd+G only frees up when go-to-line moves),
+        // so repeat until nothing changes.
+        bool skipped;
+        do
+        {
+            skipped = false;
+            foreach (var move in moves.ToList())
+            {
+                if (move.NewKeys.Length > 0 &&
+                    shortcuts.Any(s => s.Keys != null && !moves.Any(m => ReferenceEquals(m.Shortcut, s)) && IsSameKeys(s.Keys, move.NewKeys)))
+                {
+                    moves.Remove(move);
+                    skipped = true;
+                }
+            }
+        } while (skipped);
+
+        foreach (var (shortcut, newKeys) in moves)
+        {
+            shortcut.Keys = [.. newKeys];
+        }
+    }
+
+    private static bool IsSameKeys(List<string> keys, string[] expected)
+    {
+        return keys.Count == expected.Length &&
+               !keys.Except(expected, StringComparer.OrdinalIgnoreCase).Any() &&
+               !expected.Except(keys, StringComparer.OrdinalIgnoreCase).Any();
     }
 
     public static void SaveSettings()
@@ -550,23 +663,60 @@ public class Se
         var settingsFileExists = System.IO.File.Exists(settingsFileName);
         if (settingsFileExists)
         {
-            try
-            {
-                // Stream + source-generated metadata: no UTF-16 string round-trip and no
-                // runtime reflection over the settings type graph.
-                using var stream = System.IO.File.OpenRead(settingsFileName);
-                Settings = JsonSerializer.Deserialize(stream, SeJsonContext.Default.Se)!;
-            }
-            catch (Exception exception)
-            {
-                Se.LogError(exception);
-                Settings = new Se();
-            }
-
+            Settings = TryDeserializeSettings(settingsFileName) ?? new Se();
             SetDefaultValues();
         }
 
+        ApplyLoadedSettings(settingsFileExists);
+    }
+
+    /// <summary>
+    /// Loads a settings file the way <see cref="LoadSettings(string)"/> does, but only replaces
+    /// the live <see cref="Settings"/> when the file parses. A truncated or foreign file leaves
+    /// the current settings untouched and returns false, where <see cref="LoadSettings(string)"/>
+    /// falls back to defaults so the app can still start - the right call at startup, the wrong
+    /// one when the user picks a backup to restore.
+    /// </summary>
+    public static bool TryLoadSettings(string settingsFileName)
+    {
+        if (!System.IO.File.Exists(settingsFileName))
+        {
+            return false;
+        }
+
+        var loaded = TryDeserializeSettings(settingsFileName);
+        if (loaded == null)
+        {
+            return false;
+        }
+
+        Settings = loaded;
+        SetDefaultValues();
+        ApplyLoadedSettings(settingsFileExists: true);
+        return true;
+    }
+
+    private static Se? TryDeserializeSettings(string settingsFileName)
+    {
+        try
+        {
+            // Stream + source-generated metadata: no UTF-16 string round-trip and no
+            // runtime reflection over the settings type graph.
+            using var stream = System.IO.File.OpenRead(settingsFileName);
+            return JsonSerializer.Deserialize(stream, SeJsonContext.Default.Se);
+        }
+        catch (Exception exception)
+        {
+            Se.LogError(exception);
+            return null;
+        }
+    }
+
+    /// <summary>Post-load migrations and the libse bridge, shared by every load path.</summary>
+    private static void ApplyLoadedSettings(bool settingsFileExists)
+    {
         MigrateMacOsFontSettings(Settings.Appearance, OperatingSystem.IsMacOS(), settingsFileExists);
+        MigrateLayoutNumber(Settings.General);
 
         UpdateLibSeSettings();
 
@@ -592,6 +742,37 @@ public class Se
 
         // Once marked, a later explicit System Font selection must remain untouched.
         appearance.MacOsFontMigrationVersion = CurrentMacOsFontMigrationVersion;
+    }
+
+    /// <summary>
+    /// Version 1: layouts 12 and 13 (text box below the video player, issue #14812) were inserted
+    /// before the "no video" layout, which moved from 12 to 14. A persisted 12 from before that
+    /// still means "no video", so it is moved along once.
+    /// <para>
+    /// Version 2: the editor-style layout (timeline with video and subtitle rows) took number 14,
+    /// and "no video" moved on to 15 to stay last in the picker. The steps run in order, so a
+    /// settings file from before version 1 goes 12 -> 14 -> 15.
+    /// </para>
+    /// </summary>
+    internal static void MigrateLayoutNumber(SeGeneral general)
+    {
+        var version = general.LayoutMigrationVersion.GetValueOrDefault();
+        if (version >= CurrentLayoutMigrationVersion)
+        {
+            return;
+        }
+
+        if (version < 1 && general.LayoutNumber == 12)
+        {
+            general.LayoutNumber = 14;
+        }
+
+        if (version < 2 && general.LayoutNumber == 14)
+        {
+            general.LayoutNumber = 15;
+        }
+
+        general.LayoutMigrationVersion = CurrentLayoutMigrationVersion;
     }
 
     /// <summary>
@@ -648,6 +829,24 @@ public class Se
         }
 
         video.ShowChangesFFmpegArguments = arguments.Trim();
+    }
+
+    /// <summary>
+    /// Resets a persisted mpv "audio-buffer" of 0.05 s - the default SE shipped from 5.2.0
+    /// beta 20 through rc2 - back to "use mpv's default". A buffer that small let ordinary
+    /// audio-thread hiccups underrun the device; mpv then stops audio, refills, restarts, and
+    /// its clock stands still meanwhile, seen as the waveform cursor and time display freezing
+    /// for up to a second or two, worst around pause/resume (#14523). The value is persisted
+    /// with the rest of the settings, so without this only fresh installs would get the fix.
+    /// Matched to the shipped value only: anyone who set a different buffer keeps it.
+    /// </summary>
+    internal static void MigrateMpvAudioBuffer(SeVideo video)
+    {
+        const double legacyDefault = 0.05;
+        if (Math.Abs(video.MpvAudioBufferSeconds - legacyDefault) < 0.0001)
+        {
+            video.MpvAudioBufferSeconds = 0;
+        }
     }
 
     /// <summary>
@@ -795,6 +994,7 @@ public class Se
         }
 
         MigrateShotChangesFfmpegArguments(Settings.Video);
+        MigrateMpvAudioBuffer(Settings.Video);
 
         if (Settings.Waveform == null)
         {
@@ -809,6 +1009,8 @@ public class Se
         {
             Settings.BeautifyTimeCodes = new();
         }
+
+        Settings.BeautifyTimeCodes.CustomProfiles ??= new();
 
         if (Settings.Ocr == null)
         {
@@ -904,6 +1106,7 @@ public class Se
 
 
         Configuration.Settings.Tools.AutoTranslateDelaySeconds = (int)Math.Round(Settings.AutoTranslate.RequestDelaySeconds, MidpointRounding.AwayFromZero);
+        Configuration.Settings.Tools.AutoTranslateKeepMusicLines = Settings.AutoTranslate.KeepMusicLinesUntranslated;
         if (Settings.AutoTranslate.RequestMaxBytes > 0)
         {
             Configuration.Settings.Tools.AutoTranslateMaxBytes = (int)Math.Round(Settings.AutoTranslate.RequestMaxBytes, MidpointRounding.AwayFromZero);
@@ -966,6 +1169,7 @@ public class Se
         ss.DCinemaFadeUpTime = dc.DCinemaFadeUpTime;
         ss.DCinemaFadeDownTime = dc.DCinemaFadeDownTime;
         Configuration.Settings.Tools.RememberUseAlwaysList = Settings.Tools.SpellCheckRememberUseAlwaysList;
+        Configuration.Settings.Tools.FixShortDisplayTimesAllowMoveStartTime = Settings.Tools.FixShortDisplayTimesAllowMoveStartTime;
     }
 
     /// <summary>
@@ -1129,16 +1333,34 @@ public class Se
         LogError(exception.Message + Environment.NewLine + message + Environment.NewLine + exception.StackTrace);
     }
 
+    private static readonly ErrorLogThrottle ErrorThrottle = new();
+
     public static void LogError(string error)
     {
         try
         {
+            // An error raised from a timer repeats at 6-60 Hz - see ErrorLogThrottle.
+            if (!ErrorThrottle.ShouldLog(error, Environment.TickCount64, out var suppressedBefore, out var isLastInWindow))
+            {
+                return;
+            }
+
             var filePath = GetErrorLogFilePath();
             using var writer = new StreamWriter(filePath, true, Encoding.UTF8);
             writer.WriteLine("-----------------------------------------------------------------------------");
             writer.WriteLine($"Date: {DateTime.Now.ToString(CultureInfo.InvariantCulture)}");
             writer.WriteLine($"SE: {GetSeInfo()}");
             writer.WriteLine(error);
+            if (suppressedBefore > 0)
+            {
+                writer.WriteLine($"(This error occurred {suppressedBefore.ToString(CultureInfo.InvariantCulture)} more times since it was last logged)");
+            }
+
+            if (isLastInWindow)
+            {
+                writer.WriteLine($"(Logged {ErrorLogThrottle.MaxEntriesPerWindow} times within a minute - for the rest of that minute identical errors are only counted)");
+            }
+
             writer.WriteLine();
         }
         catch

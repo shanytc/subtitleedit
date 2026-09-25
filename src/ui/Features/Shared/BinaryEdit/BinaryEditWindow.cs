@@ -315,6 +315,16 @@ public class BinaryEditWindow : Window
                     Header = Se.Language.Tools.ImageBasedEdit.CropImages,
                     Command = vm.CropCommand,
                 },
+                new MenuItem
+                {
+                    Header = Se.Language.General.VideoResolution + "...",
+                    Command = vm.ChangeResolutionCommand,
+                },
+                new MenuItem
+                {
+                    Header = Se.Language.Tools.ImageBasedEdit.MoveCaptionsDotDotDot,
+                    Command = vm.MoveCaptionsCommand,
+                },
                 new Separator(),
                 new MenuItem
                 {
@@ -347,6 +357,11 @@ public class BinaryEditWindow : Window
                 {
                     Header = Se.Language.Tools.ImageBasedEdit.SortByStartTime,
                     Command = vm.SortByStartTimeCommand,
+                },
+                new MenuItem
+                {
+                    Header = Se.Language.Tools.ImageBasedEdit.RemoveFadeInOut,
+                    Command = vm.RemoveFadesCommand,
                 },
                 new MenuItem
                 {
@@ -397,6 +412,14 @@ public class BinaryEditWindow : Window
                     Header = l.CloseVideoFile,
                     Command = vm.CloseVideoCommand,
                 },
+                new Separator(),
+                new MenuItem
+                {
+                    // Where the main window has it too (its Video menu).
+                    Header = l.GenerateBurnIn,
+                    Command = vm.GenerateBurnInCommand,
+                },
+                new Separator(),
                 new MenuItem
                 {
                     Header = l.ToggleSelectSubtitleWhilePlayingCurrentlyOn,
@@ -409,7 +432,7 @@ public class BinaryEditWindow : Window
                     Command = vm.ToggleCurrentSubtitleWhilePlayingCommand,
                     [!MenuItem.IsVisibleProperty] = new Binding(nameof(vm.SelectCurrentSubtitleWhilePlaying))
                     {
-                        Converter = new InverseBooleanConverter(),
+                        Converter = InverseBooleanConverter.Instance,
                     },
                 },
             },
@@ -600,6 +623,15 @@ public class BinaryEditWindow : Window
         };
         flyout.Items.Add(menuItemCropSelectedLines);
         menuItemCropSelectedLines.Bind(MenuItem.IsVisibleProperty, new Binding(nameof(vm.HasSelection)));
+
+        var menuItemMoveCaptionsSelectedLines = new MenuItem
+        {
+            Header = Se.Language.Tools.ImageBasedEdit.MoveCaptionsDotDotDot,
+            DataContext = vm,
+            Command = vm.MoveCaptionsSelectedLinesCommand,
+        };
+        flyout.Items.Add(menuItemMoveCaptionsSelectedLines);
+        menuItemMoveCaptionsSelectedLines.Bind(MenuItem.IsVisibleProperty, new Binding(nameof(vm.HasSelection)));
 
         flyout.Items.Add(new Separator());
 

@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using Nikse.SubtitleEdit.Core.Common;
+using Nikse.SubtitleEdit.UiLogic.Ocr;
 
 namespace Nikse.SubtitleEdit.UiLogic.LlamaCpp;
 
@@ -189,6 +190,26 @@ public static class LlamaCppServerManager
             "https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q8_0.gguf",
             PromptTemplate: HyMt2PromptTemplate, Temperature: 0.7, TopP: 0.6, TopK: 20, RepeatPenalty: 1.05),
 
+        // TranslatePsy-AfriSLM 4B (Tether/QVAC, 2026) - a Qwen 3.5 4B fine-tune for English <-> 19
+        // Sub-Saharan African languages (Afrikaans, Amharic, Hausa, Igbo, Kinyarwanda, Lingala,
+        // Luganda, Malagasy, Nyanja, Oromo, Shona, Somali, Southern Sotho, Swahili, Tswana, Wolof,
+        // Xhosa, Yoruba, Zulu), official GGUFs, Apache-2.0. Fills a real gap: the base Qwen 3.5 4B
+        // writes fluent-looking nonsense in Zulu/Yoruba (16 subtitle lines, back-translated: 1-2 of
+        // 16 recognizable vs 15-16 of 16 for this model). Verified 2026-09-21 on b10840:
+        // - NoThinking is mandatory - it inherits Qwen 3.5's thinking template and without
+        //   "--reasoning off" 12 of 16 lines came back empty (answer in reasoning_content).
+        // - No PromptTemplate on purpose: the model card's prompt ("Please translate the following
+        //   {0} text into {1}: {2}.\n\nTranslation:") drops line breaks and, translating INTO
+        //   English, pads short lines with invented sentences ("Yeah." -> "Yes. Yes, that's
+        //   right."); SE's generic prompt has neither problem. The advanced engine's JSON batch
+        //   protocol works as well (all lines translated, all line breaks kept).
+        new LlamaCppModel("TranslatePsy-AfriSLM 4B (Q4_K_M) - English <-> 19 African languages", "TranslatePsy-AfriSLM-4B-Q4_K_M-imat.gguf", "3.1 GB",
+            "https://huggingface.co/qvac/TranslatePsy-AfriSLM-4B-Q4-GGUF/resolve/main/TranslatePsy-AfriSLM-4B-Q4_K_M-imat.gguf",
+            NoThinking: true),
+        new LlamaCppModel("TranslatePsy-AfriSLM 4B (Q8_0) - English <-> 19 African languages", "TranslatePsy-AfriSLM-4B-Q8_0-imat.gguf", "5.2 GB",
+            "https://huggingface.co/qvac/TranslatePsy-AfriSLM-4B-Q8-GGUF/resolve/main/TranslatePsy-AfriSLM-4B-Q8_0-imat.gguf",
+            NoThinking: true),
+
         // Aya Expanse 8B (Cohere) - a dedicated multilingual model (23 languages), a good translation
         // alternative to the Gemma/Qwen families. Uses its own embedded (Cohere) chat template, so we
         // leave ChatTemplate/NoJinja at their defaults instead of forcing gemma/chatml. Kept to <= 8 GB.
@@ -299,6 +320,18 @@ public static class LlamaCppServerManager
             "https://huggingface.co/ggml-org/GLM-OCR-GGUF/resolve/main/GLM-OCR-Q8_0.gguf",
             MmprojFileName: "mmproj-GLM-OCR-Q8_0.gguf",
             MmprojUrl: "https://huggingface.co/ggml-org/GLM-OCR-GGUF/resolve/main/mmproj-GLM-OCR-Q8_0.gguf"),
+        // Liquid AI's general vision model (3B), not an OCR specialist. Measured 2026-09-05 on the
+        // same 14-image corpus: 0.00% character error - flawless across all eight scripts, italics,
+        // busy video backgrounds and small text, where GLM-OCR misread one Russian word - and with
+        // its own prompt 13/14 exact (its one miss over-splits a line; it never merges). Second,
+        // not first, because it is 2.5x the download (2.9 GB + 0.6 GB mmproj) and ~2.5x slower per
+        // image. It follows instructions literally, so it needs the PromptTemplate below: under the
+        // shared prompt it prefixes every answer with the line count it was asked to identify.
+        new LlamaCppModel("LFM2.5-VL 3B (Q8_0)", "LFM2.5-VL-3B-Q8_0.gguf", "3.5 GB",
+            "https://huggingface.co/LiquidAI/LFM2.5-VL-3B-GGUF/resolve/main/LFM2.5-VL-3B-Q8_0.gguf",
+            MmprojFileName: "mmproj-LFM2.5-VL-3B-Q8_0.gguf",
+            MmprojUrl: "https://huggingface.co/LiquidAI/LFM2.5-VL-3B-GGUF/resolve/main/mmproj-LFM2.5-VL-3B-Q8_0.gguf",
+            PromptTemplate: SeOcrDefaults.LlamaCppOcrPromptLfm25Vl),
         // PaddlePaddle's official llama.cpp package - 109 languages (NaViT + ERNIE-4.5).
         new LlamaCppModel("PaddleOCR-VL 1.6", "PaddleOCR-VL-1.6-GGUF.gguf", "1.8 GB",
             "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/resolve/main/PaddleOCR-VL-1.6-GGUF.gguf",
@@ -327,6 +360,26 @@ public static class LlamaCppServerManager
             MmprojFileName: "mmproj-LightOnOCR-1B-1025-Q8_0.gguf",
             MmprojUrl: "https://huggingface.co/ggml-org/LightOnOCR-1B-1025-GGUF/resolve/main/mmproj-LightOnOCR-1B-1025-Q8_0.gguf"),
     };
+
+    /// <summary>
+    /// The OCR prompt to send for <paramref name="model"/>: the model's own
+    /// <see cref="LlamaCppModel.PromptTemplate"/> when it has one and the user has left the shared
+    /// OCR prompt at its default, otherwise the user's prompt. A user who has edited the shared
+    /// prompt has opted into driving every model with it, so their wording wins even over a model
+    /// that ships a tuned prompt. Callers pass the model as the user picked it; a null model (a
+    /// user-managed server with an unknown model name) always gets the user's prompt.
+    /// </summary>
+    public static string ResolveOcrPrompt(LlamaCppModel? model, string? userPrompt)
+    {
+        var prompt = string.IsNullOrWhiteSpace(userPrompt) ? SeOcrDefaults.LlamaCppOcrPrompt : userPrompt;
+        if (model?.PromptTemplate is { Length: > 0 } modelPrompt &&
+            prompt.Trim() == SeOcrDefaults.LlamaCppOcrPrompt)
+        {
+            return modelPrompt;
+        }
+
+        return prompt;
+    }
 
     /// <summary>
     /// Root folder holding the llama-server executable and the <c>models</c> subfolder.
@@ -463,7 +516,10 @@ public static class LlamaCppServerManager
             return ("gemma", true, false);
         }
 
-        if (fileName.Contains("qwen", StringComparison.OrdinalIgnoreCase))
+        // "afrislm": TranslatePsy-AfriSLM is a Qwen 3.5 fine-tune that thinks by default just like
+        // its base, but no file of that family carries "qwen" in its name.
+        if (fileName.Contains("qwen", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Contains("afrislm", StringComparison.OrdinalIgnoreCase))
         {
             return (null, false, true);
         }

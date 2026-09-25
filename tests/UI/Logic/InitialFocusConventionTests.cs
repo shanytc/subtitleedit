@@ -98,6 +98,83 @@ public class InitialFocusConventionTests
             string.Join(Environment.NewLine, offenders));
     }
 
+    /// <summary>
+    /// The OK button is IsDefault (UiUtil.MakeButtonOk), so an unhandled Enter anywhere in the
+    /// window already clicks it. A window or control key handler that runs OK on Enter itself must
+    /// therefore mark the event handled, or the same key press runs OK twice (#14586).
+    /// </summary>
+    [Fact]
+    public void EnterHandler_ThatRunsOk_MarksHandled()
+    {
+        var offenders = new List<string>();
+
+        foreach (var file in UiSourceFiles())
+        {
+            var text = File.ReadAllText(file);
+            foreach (Match match in Regex.Matches(text, @"if \([^\n]*Key\.(Enter|Return)[^\n]*\)\s*\r?\n\s*\{"))
+            {
+                if (IsInsideComment(text, match.Index))
+                {
+                    continue;
+                }
+
+                var body = ReadBlockAfter(text, match.Index);
+                var runsOk = Regex.IsMatch(body, @"\bOk\(\)|OkCommand\.Execute\(");
+                if (runsOk && !body.Contains("Handled = true", StringComparison.Ordinal))
+                {
+                    var line = text.Take(match.Index).Count(c => c == '\n') + 1;
+                    offenders.Add($"{Relative(file)}:{line}");
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "An Enter handler runs OK without setting e.Handled = true. The OK button is " +
+            "IsDefault and clicks on the same unhandled Enter, so OK runs twice." +
+            Environment.NewLine +
+            string.Join(Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// Avalonia's SplitButton clicks on Enter key-up and leaves the key-down unhandled, so in a
+    /// window with an IsDefault OK/Done button Enter on the focused split button runs OK/Done
+    /// instead (#15197). SeSplitButton handles Enter on key-down; use it everywhere.
+    /// </summary>
+    [Fact]
+    public void NoPlainSplitButton()
+    {
+        var offenders = new List<string>();
+
+        foreach (var file in UiSourceFiles())
+        {
+            if (Path.GetFileName(file) == "SeSplitButton.cs")
+            {
+                continue;
+            }
+
+            var text = File.ReadAllText(file);
+            foreach (Match match in Regex.Matches(text, @"\bnew SplitButton\b"))
+            {
+                if (IsInsideComment(text, match.Index))
+                {
+                    continue;
+                }
+
+                var line = text.Take(match.Index).Count(c => c == '\n') + 1;
+                offenders.Add($"{Relative(file)}:{line}");
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A plain SplitButton is created. Enter on it reaches the window's IsDefault button " +
+            "before the split button clicks (it clicks on key-up), so Enter runs OK/Done instead. " +
+            "Use SeSplitButton." +
+            Environment.NewLine +
+            string.Join(Environment.NewLine, offenders));
+    }
+
     /// <summary>The block that starts at the first "{" after <paramref name="index"/>.</summary>
     private static string ReadBlockAfter(string text, int index)
     {

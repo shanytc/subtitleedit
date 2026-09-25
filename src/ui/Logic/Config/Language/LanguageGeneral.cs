@@ -7,6 +7,12 @@ public class LanguageGeneral
     public string Abort { get; set; }
     public string Actor { get; set; }
     public string Actors { get; set; }
+    public string SetActorDotDotDot { get; set; }
+    public string ActorPickerTitle { get; set; }
+    public string ActorPickerFilterHint { get; set; }
+    public string ActorPickerKeysHint { get; set; }
+    public string ActorPickerNewActorX { get; set; }
+    public string ActorPickerLinesSelectedX { get; set; }
     public string Add { get; set; }
     public string AddDotDotDot { get; set; }
     public string AddToNamesListCaseSensitive { get; set; }
@@ -339,6 +345,7 @@ public class LanguageGeneral
     public string MergeSelectedLinesDialog { get; set; }
     public string MergeWithLineAfterAndAutoBreak { get; set; }
     public string MergeWithLineAfterKeepBreaks { get; set; }
+    public string MergeWithLineAfterAndUnbreak { get; set; }
     public string MergeWithLineBeforeAndAutoBreak { get; set; }
     public string MergeWithLineBeforeKeepBreaks { get; set; }
     public string MiddleCenter { get; set; }
@@ -353,6 +360,8 @@ public class LanguageGeneral
     public string MoveAllShotChangeOneFrameForward { get; set; }
     public string MultiMode { get; set; }
     public string MoveDown { get; set; }
+    public string Increase { get; set; }
+    public string Decrease { get; set; }
     public string MoveUp { get; set; }
     public string MoveToTop { get; set; }
     public string MoveToBottom { get; set; }
@@ -402,6 +411,8 @@ public class LanguageGeneral
     public string OpenVideoFileTitle { get; set; }
     public string OptimalCharactersPerSecond { get; set; }
     public string Options { get; set; }
+    public string OriginalSubtitleClosed { get; set; }
+    public string OriginalSubtitleLoadedX { get; set; }
     public string OriginalText { get; set; }
     public string Outline { get; set; }
     public string OutlineColor { get; set; }
@@ -678,6 +689,7 @@ public class LanguageGeneral
     public string Type { get; set; }
     public string Unbreak { get; set; }
     public string UnbreakLines { get; set; }
+    public string Undelete { get; set; }
     public string Underline { get; set; }
     public string Undo { get; set; }
     public string Unknown { get; set; }
@@ -776,7 +788,6 @@ public class LanguageGeneral
     public string ImageFiles { get; set; }
     public string OpenAiCompatibleSttEndpoint { get; set; }
     public string OpenAiCompatibleSttApiKey { get; set; }
-    public string OpenAiCompatibleSttModel { get; set; }
     public string OpenAiCompatibleSttExtraHeaders { get; set; }
     public string OpenAiCompatibleSttTimeout { get; set; }
     public string OpenAiCompatibleSttLanguage { get; set; }
@@ -786,6 +797,9 @@ public class LanguageGeneral
     public string DashScopeSttRegion { get; set; }
     public string DashScopeSttEnableWords { get; set; }
     public string DashScopeSttRegionKeyHint { get; set; }
+    public string GoogleCloudSttProjectId { get; set; }
+    public string GoogleCloudSttBucketName { get; set; }
+    public string GoogleCloudSttDynamicBatching { get; set; }
     public string OnlineSttApiKeyMissing { get; set; }
     public string OpenAiCompatibleSttAutoTranscribeOnAudioSelection { get; set; }
     public string OpenAiCompatibleSttStream { get; set; }
@@ -811,6 +825,12 @@ public class LanguageGeneral
         Abort = "Abort";
         Actor = "Actor";
         Actors = "Actors";
+        SetActorDotDotDot = "Set actor...";
+        ActorPickerTitle = "Set actor";
+        ActorPickerFilterHint = "Type to filter, or type a new actor name";
+        ActorPickerKeysHint = "Press a number or Enter to set the actor. Alt+Up/Down changes the order, Delete removes the actor.";
+        ActorPickerNewActorX = "New actor \"{0}\"";
+        ActorPickerLinesSelectedX = "Lines selected: {0}";
         Add = "Add";
         AddDotDotDot = "Add...";
         AddToNamesListCaseSensitive = "Add to names list (case sensitive)";
@@ -1151,6 +1171,7 @@ public class LanguageGeneral
         MergeSelectedLinesDialog = "Merge selected lines as dialog";
         MergeWithLineAfterAndAutoBreak = "Merge with line after and auto-break";
         MergeWithLineAfterKeepBreaks = "Merge with line after (keep breaks)";
+        MergeWithLineAfterAndUnbreak = "Merge with line after and unbreak";
         MergeWithLineBeforeAndAutoBreak = "Merge with line before and auto-break";
         MergeWithLineBeforeKeepBreaks = "Merge with line before (keep breaks)";
         MiddleCenter = "Middle-Center";
@@ -1165,6 +1186,8 @@ public class LanguageGeneral
         MoveAllShotChangeOneFrameForward = "Move all shot changes one frame forward";
         MultiMode = "Multi mode";
         MoveDown = "Move down";
+        Increase = "Increase";
+        Decrease = "Decrease";
         MoveUp = "Move up";
         MoveToTop = "Move to top";
         MoveToBottom = "Move to bottom";
@@ -1214,6 +1237,8 @@ public class LanguageGeneral
         OpenVideoFileTitle = "Open video file";
         OptimalCharactersPerSecond = "Optimal characters per second";
         Options = "Options";
+        OriginalSubtitleClosed = "Original subtitle closed";
+        OriginalSubtitleLoadedX = "Original subtitle loaded: {0}";
         OriginalText = "Original text";
         Outline = "Outline";
         OutlineColor = "Outline color";
@@ -1482,6 +1507,7 @@ public class LanguageGeneral
         Type = "Type";
         Unbreak = "Unbreak text";
         UnbreakLines = "Unbreak lines";
+        Undelete = "Undelete";
         Underline = "Underline";
         Undo = "Undo";
         Unknown = "Unknown";
@@ -1580,7 +1606,6 @@ public class LanguageGeneral
         ImageFiles = "Image files";
         OpenAiCompatibleSttEndpoint = "STT Endpoint URL";
         OpenAiCompatibleSttApiKey = "API Key";
-        OpenAiCompatibleSttModel = "Model";
         OpenAiCompatibleSttExtraHeaders = "Extra Headers";
         OpenAiCompatibleSttTimeout = "Timeout (seconds)";
         OpenAiCompatibleSttLanguage = "Language Hint";
@@ -1589,6 +1614,9 @@ public class LanguageGeneral
         OpenAiCompatibleSttModelRejectedHint = "The server rejected the model name. Not every OpenAI compatible endpoint takes a model - xAI's https://api.x.ai/v1/stt, for one, has no 'model' parameter at all. Try clearing the Model field.";
         DashScopeSttRegion = "Region";
         DashScopeSttEnableWords = "Word-level timestamps";
+        GoogleCloudSttProjectId = "Project ID (only for Application Default Credentials)";
+        GoogleCloudSttBucketName = "Storage bucket (empty = auto)";
+        GoogleCloudSttDynamicBatching = "Dynamic batching (about 5x cheaper, no latency guarantee)";
         DashScopeSttRegionKeyHint = "Note: Alibaba Cloud Model Studio API keys are region-specific - make sure the selected region matches the region where the API key was created (China vs. International).";
         OnlineSttApiKeyMissing = "An API key is required. Please enter your API key and try again.";
         OpenAiCompatibleSttAutoTranscribeOnAudioSelection = "Auto-transcribe new waveform selection via speech-to-text";

@@ -612,7 +612,16 @@ namespace Nikse.SubtitleEdit.Core.Common
             if (p.GetCharactersPerSecond() > maxCharactersPerSecond)
             {
                 var numberOfCharacters = (double)p.Text.CountCharacters(true);
-                var maxDurationMilliseconds = (numberOfCharacters / maxCharactersPerSecond) * 1000.0;
+                // Whole milliseconds, rounded up: the fractional value truncates on save to one ms
+                // short, which is just over the maximum this branch exists to enforce (#14418).
+                // Verified with the same division GetCharactersPerSecond performs rather than a
+                // plain Math.Ceiling, so binary-fraction noise does not add a needless millisecond.
+                var maxDurationMilliseconds = Math.Floor(numberOfCharacters / maxCharactersPerSecond * 1000.0);
+                if (numberOfCharacters / (maxDurationMilliseconds / 1000.0) > maxCharactersPerSecond)
+                {
+                    maxDurationMilliseconds += 1;
+                }
+
                 p.EndTime.TotalMilliseconds = p.StartTime.TotalMilliseconds + maxDurationMilliseconds;
             }
 
@@ -846,17 +855,30 @@ namespace Nikse.SubtitleEdit.Core.Common
         /// <returns>Number of lines deleted</returns>
         public int RemoveParagraphsByIndices(IEnumerable<int> indices)
         {
-            var count = 0;
-            foreach (var index in indices.OrderByDescending(p => p))
+            var indexList = indices as IList<int> ?? indices.ToList();
+            var indexSet = new HashSet<int>(indexList);
+            if (indexSet.Count != indexList.Count)
             {
-                if (index >= 0 && index < Paragraphs.Count)
+                // A repeated index removed a second, shifted line in the original loop; keep
+                // that (odd) behaviour for such callers rather than guess.
+                var removed = 0;
+                foreach (var index in indexList.OrderByDescending(p => p))
                 {
-                    Paragraphs.RemoveAt(index);
-                    count++;
+                    if (index >= 0 && index < Paragraphs.Count)
+                    {
+                        Paragraphs.RemoveAt(index);
+                        removed++;
+                    }
                 }
+
+                return removed;
             }
 
-            return count;
+            // Single compaction pass instead of RemoveAt per index (O(paragraphs * k)).
+            var count = Paragraphs.Count;
+            var i = 0;
+            Paragraphs.RemoveAll(p => indexSet.Contains(i++));
+            return count - Paragraphs.Count;
         }
 
         /// <summary>

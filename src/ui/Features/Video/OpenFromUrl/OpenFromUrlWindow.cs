@@ -1,4 +1,5 @@
 ﻿using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Data;
 using Avalonia.Input;
@@ -36,7 +37,7 @@ public class OpenFromUrlWindow : Window
         var heading = new TextBlock
         {
             Text = Se.Language.Video.OpenFromUrlTitle,
-            FontSize = 18,
+            FontSize = UiUtil.ScaledFontSize(18),
             FontWeight = FontWeight.SemiBold,
             Margin = new Thickness(0, 0, 0, 4),
         };
@@ -137,7 +138,7 @@ public class OpenFromUrlWindow : Window
         var iconText = new TextBlock
         {
             Text = iconGlyph,
-            FontSize = 28,
+            FontSize = UiUtil.ScaledFontSize(28),
             Foreground = accent,
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 2, 16, 0),
@@ -148,7 +149,7 @@ public class OpenFromUrlWindow : Window
         var titleText = new TextBlock
         {
             Text = title,
-            FontSize = 15,
+            FontSize = UiUtil.ScaledFontSize(15),
             FontWeight = FontWeight.SemiBold,
             Margin = new Thickness(0, 0, 0, 4),
         };
@@ -164,7 +165,7 @@ public class OpenFromUrlWindow : Window
         var noteIcon = new TextBlock
         {
             Text = "ⓘ", // ⓘ
-            FontSize = 13,
+            FontSize = UiUtil.ScaledFontSize(13),
             Foreground = accent,
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 1, 6, 0),
@@ -202,6 +203,8 @@ public class OpenFromUrlWindow : Window
         var button = new Button
         {
             Content = row,
+            // The card's content is a panel; announce it by its title (#12087).
+            [AutomationProperties.NameProperty] = title,
             Padding = new Thickness(CardPadding),
             Margin = new Thickness(0, CardSpacing / 2, 0, CardSpacing / 2),
             HorizontalAlignment = HorizontalAlignment.Stretch,

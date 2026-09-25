@@ -67,13 +67,13 @@ public partial class ShortcutsViewModel : ObservableObject
     // Same for the "search via" slots (name + URL).
     private readonly string[] _customSearchNameSlots = new string[Se.CustomSearchSlotCount];
     private readonly string[] _customSearchUrlSlots = new string[Se.CustomSearchSlotCount];
-    // Mirror Se.Settings.Actor1..10 while the dialog is open so OK/Cancel
-    // semantics match the other configurable slots (Color1..8, Surround1..3).
-    private readonly string[] _actorSlots = new string[10];
     // Same for the custom video-seek amounts (1Back, 1Forward, 2Back, ... 4Forward) and the
     // go-to-first/last-line option: these used to be written straight into Se.Settings from
     // the Configure dialogs, so Cancel did not undo them and the next save persisted them.
     private readonly int[] _videoSeekSlots = new int[8];
+    // Same for the "move lines, custom milliseconds" steps: [scope][slot] (#14789).
+    private readonly int[,] _moveLinesSlots = new int[3, MoveLinesSlotCount];
+    private const int MoveLinesSlotCount = 2;
     private bool _goToFirstAndLastLineAlsoSetVideoPosition;
 
     // Add this flag to prevent updates during selection changes
@@ -122,16 +122,13 @@ public partial class ShortcutsViewModel : ObservableObject
         _videoSeekSlots[6] = Se.Settings.Video.MoveVideoPositionCustom4Back;
         _videoSeekSlots[7] = Se.Settings.Video.MoveVideoPositionCustom4Forward;
         _goToFirstAndLastLineAlsoSetVideoPosition = Se.Settings.Tools.GoToFirstAndLastLineAlsoSetVideoPosition;
-        _actorSlots[0] = Se.Settings.Actor1;
-        _actorSlots[1] = Se.Settings.Actor2;
-        _actorSlots[2] = Se.Settings.Actor3;
-        _actorSlots[3] = Se.Settings.Actor4;
-        _actorSlots[4] = Se.Settings.Actor5;
-        _actorSlots[5] = Se.Settings.Actor6;
-        _actorSlots[6] = Se.Settings.Actor7;
-        _actorSlots[7] = Se.Settings.Actor8;
-        _actorSlots[8] = Se.Settings.Actor9;
-        _actorSlots[9] = Se.Settings.Actor10;
+        foreach (var scope in Enum.GetValues<MoveLinesScope>())
+        {
+            for (var slot = 1; slot <= MoveLinesSlotCount; slot++)
+            {
+                _moveLinesSlots[(int)scope, slot - 1] = ShortcutsMain.GetMoveLinesCustomMs(scope, slot);
+            }
+        }
     }
 
     partial void OnSelectedGroupTileChanged(ShortcutGroupTile? value)
@@ -264,16 +261,18 @@ public partial class ShortcutsViewModel : ObservableObject
         _configurableCommands.Add(vm.VideoMoveCustom3ForwardCommand);
         _configurableCommands.Add(vm.VideoMoveCustom4BackCommand);
         _configurableCommands.Add(vm.VideoMoveCustom4ForwardCommand);
-        _configurableCommands.Add(vm.SetActor1Command);
-        _configurableCommands.Add(vm.SetActor2Command);
-        _configurableCommands.Add(vm.SetActor3Command);
-        _configurableCommands.Add(vm.SetActor4Command);
-        _configurableCommands.Add(vm.SetActor5Command);
-        _configurableCommands.Add(vm.SetActor6Command);
-        _configurableCommands.Add(vm.SetActor7Command);
-        _configurableCommands.Add(vm.SetActor8Command);
-        _configurableCommands.Add(vm.SetActor9Command);
-        _configurableCommands.Add(vm.SetActor10Command);
+        _configurableCommands.Add(vm.MoveSelectedLinesCustom1BackCommand);
+        _configurableCommands.Add(vm.MoveSelectedLinesCustom1ForwardCommand);
+        _configurableCommands.Add(vm.MoveSelectedLinesCustom2BackCommand);
+        _configurableCommands.Add(vm.MoveSelectedLinesCustom2ForwardCommand);
+        _configurableCommands.Add(vm.MoveSelectedLinesAndForwardCustom1BackCommand);
+        _configurableCommands.Add(vm.MoveSelectedLinesAndForwardCustom1ForwardCommand);
+        _configurableCommands.Add(vm.MoveSelectedLinesAndForwardCustom2BackCommand);
+        _configurableCommands.Add(vm.MoveSelectedLinesAndForwardCustom2ForwardCommand);
+        _configurableCommands.Add(vm.MoveAllLinesCustom1BackCommand);
+        _configurableCommands.Add(vm.MoveAllLinesCustom1ForwardCommand);
+        _configurableCommands.Add(vm.MoveAllLinesCustom2BackCommand);
+        _configurableCommands.Add(vm.MoveAllLinesCustom2ForwardCommand);
         _configurableCommands.Add(vm.GoToFirstLineCommand);
         _configurableCommands.Add(vm.GoToLastLineCommand);
     }
@@ -598,16 +597,6 @@ public partial class ShortcutsViewModel : ObservableObject
         {
             Se.Settings.SetCustomSearch(i + 1, _customSearchNameSlots[i], _customSearchUrlSlots[i]);
         }
-        Se.Settings.Actor1 = _actorSlots[0];
-        Se.Settings.Actor2 = _actorSlots[1];
-        Se.Settings.Actor3 = _actorSlots[2];
-        Se.Settings.Actor4 = _actorSlots[3];
-        Se.Settings.Actor5 = _actorSlots[4];
-        Se.Settings.Actor6 = _actorSlots[5];
-        Se.Settings.Actor7 = _actorSlots[6];
-        Se.Settings.Actor8 = _actorSlots[7];
-        Se.Settings.Actor9 = _actorSlots[8];
-        Se.Settings.Actor10 = _actorSlots[9];
         Se.Settings.Video.MoveVideoPositionCustom1Back = _videoSeekSlots[0];
         Se.Settings.Video.MoveVideoPositionCustom1Forward = _videoSeekSlots[1];
         Se.Settings.Video.MoveVideoPositionCustom2Back = _videoSeekSlots[2];
@@ -617,6 +606,15 @@ public partial class ShortcutsViewModel : ObservableObject
         Se.Settings.Video.MoveVideoPositionCustom4Back = _videoSeekSlots[6];
         Se.Settings.Video.MoveVideoPositionCustom4Forward = _videoSeekSlots[7];
         Se.Settings.Tools.GoToFirstAndLastLineAlsoSetVideoPosition = _goToFirstAndLastLineAlsoSetVideoPosition;
+        foreach (var scope in Enum.GetValues<MoveLinesScope>())
+        {
+            for (var slot = 1; slot <= MoveLinesSlotCount; slot++)
+            {
+                ShortcutsMain.SetMoveLinesCustomMs(scope, slot, _moveLinesSlots[(int)scope, slot - 1]);
+                ShortcutsMain.CommandTranslationLookup[ShortcutsMain.GetMoveLinesCustomCommandName(scope, slot, back: true)] = ShortcutsMain.GetMoveLinesCustomTitle(scope, slot, back: true);
+                ShortcutsMain.CommandTranslationLookup[ShortcutsMain.GetMoveLinesCustomCommandName(scope, slot, back: false)] = ShortcutsMain.GetMoveLinesCustomTitle(scope, slot, back: false);
+            }
+        }
 
         for (var i = 1; i <= Se.SurroundWithSlotCount; i++)
         {
@@ -626,14 +624,6 @@ public partial class ShortcutsViewModel : ObservableObject
         for (var i = 1; i <= Se.CustomSearchSlotCount; i++)
         {
             ShortcutsMain.CommandTranslationLookup[$"CustomSearch{i}Command"] = ShortcutsMain.GetSearchViaTitle(i);
-        }
-
-        for (var i = 0; i < 10; i++)
-        {
-            var commandName = i == 9
-                ? nameof(MainViewModel.SetActor10Command)
-                : $"SetActor{i + 1}Command";
-            ShortcutsMain.CommandTranslationLookup[commandName] = string.Format(Se.Language.Options.Shortcuts.SetActorXY, (i + 1).ToString(), _actorSlots[i]);
         }
 
         Se.SaveSettings();
@@ -651,13 +641,6 @@ public partial class ShortcutsViewModel : ObservableObject
             return;
         }
 
-        var actorSlotIndex = GetActorSlotIndex(node.ShortCut.Action);
-        if (actorSlotIndex >= 0)
-        {
-            await ConfigureActorSlot(node, actorSlotIndex);
-            return;
-        }
-
         var surroundSlotIndex = GetSurroundSlotIndex(node.ShortCut.Action);
         if (surroundSlotIndex >= 0)
         {
@@ -669,6 +652,13 @@ public partial class ShortcutsViewModel : ObservableObject
         if (customSearchSlotIndex >= 0)
         {
             await ConfigureCustomSearchSlot(customSearchSlotIndex);
+            return;
+        }
+
+        var moveLinesSlot = GetMoveLinesSlot(node.ShortCut.Action);
+        if (moveLinesSlot != null)
+        {
+            await ConfigureMoveLinesSlot(moveLinesSlot.Value.Scope, moveLinesSlot.Value.SlotNumber);
             return;
         }
 
@@ -1090,45 +1080,63 @@ public partial class ShortcutsViewModel : ObservableObject
         }
     }
 
-    private int GetActorSlotIndex(IRelayCommand action)
+    private (MoveLinesScope Scope, int SlotNumber)? GetMoveLinesSlot(IRelayCommand action)
     {
         if (MainViewModel == null)
         {
-            return -1;
+            return null;
         }
 
-        if (action == MainViewModel.SetActor1Command) { return 0; }
-        if (action == MainViewModel.SetActor2Command) { return 1; }
-        if (action == MainViewModel.SetActor3Command) { return 2; }
-        if (action == MainViewModel.SetActor4Command) { return 3; }
-        if (action == MainViewModel.SetActor5Command) { return 4; }
-        if (action == MainViewModel.SetActor6Command) { return 5; }
-        if (action == MainViewModel.SetActor7Command) { return 6; }
-        if (action == MainViewModel.SetActor8Command) { return 7; }
-        if (action == MainViewModel.SetActor9Command) { return 8; }
-        if (action == MainViewModel.SetActor10Command) { return 9; }
-        return -1;
+        foreach (var scope in Enum.GetValues<MoveLinesScope>())
+        {
+            for (var slot = 1; slot <= MoveLinesSlotCount; slot++)
+            {
+                if (action == GetMoveLinesCommand(scope, slot, back: true) ||
+                    action == GetMoveLinesCommand(scope, slot, back: false))
+                {
+                    return (scope, slot);
+                }
+            }
+        }
+
+        return null;
     }
 
-    private async Task ConfigureActorSlot(ShortcutTreeNode node, int slotIndex)
+    private IRelayCommand GetMoveLinesCommand(MoveLinesScope scope, int slotNumber, bool back)
+    {
+        return ShortcutsMain.GetMoveLinesCommand(MainViewModel!, scope, slotNumber, back);
+    }
+
+    /// <summary>
+    /// The slot's milliseconds are shared by its back and forward commands, so configuring
+    /// either one retitles both rows.
+    /// </summary>
+    private async Task ConfigureMoveLinesSlot(MoveLinesScope scope, int slotNumber)
     {
         if (Window == null)
         {
             return;
         }
 
-        var slotNumber = slotIndex + 1;
-        var current = _actorSlots[slotIndex];
-        var result = await _windowService.ShowDialogAsync<Nikse.SubtitleEdit.Features.Shared.PromptTextBox.PromptTextBoxWindow,
-            Nikse.SubtitleEdit.Features.Shared.PromptTextBox.PromptTextBoxViewModel>(Window, vm =>
+        var result = await _windowService.ShowDialogAsync<PickMillisecondsWindow, PickMillisecondsViewModel>(Window, vm =>
         {
-            vm.Initialize(string.Format(Se.Language.Options.Shortcuts.SetActorSlotXTitle, slotNumber.ToString()), current, 250, 20, true);
+            vm.Initialize(_moveLinesSlots[(int)scope, slotNumber - 1]);
         });
-
-        if (result.OkPressed && !string.IsNullOrWhiteSpace(result.Text))
+        if (!result.OkPressed)
         {
-            _actorSlots[slotIndex] = result.Text;
-            node.Title = string.Format(Se.Language.Options.Shortcuts.SetActorXY, slotNumber.ToString(), result.Text);
+            return;
+        }
+
+        var ms = result.Milliseconds;
+        _moveLinesSlots[(int)scope, slotNumber - 1] = ms;
+        foreach (var back in new[] { true, false })
+        {
+            var command = GetMoveLinesCommand(scope, slotNumber, back);
+            var flatNode = FlatNodes.FirstOrDefault(n => n?.ShortCut?.Action == command);
+            if (flatNode != null)
+            {
+                flatNode.Title = ShortcutsMain.GetMoveLinesCustomTitle(scope, slotNumber, back, ms);
+            }
         }
     }
 

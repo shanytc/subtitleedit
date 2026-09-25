@@ -14,6 +14,7 @@ using Nikse.SubtitleEdit.Logic.ValueConverters;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Windows.Input;
 
 namespace Nikse.SubtitleEdit.Features.Main.Layout;
 
@@ -32,7 +33,13 @@ public static class InitMenu
             Command = vm.CommandFileReopenCommand,
         };
 
+        vm.MenuRecentVideos = new MenuItem
+        {
+            Header = Se.Language.Video.OpenRecentVideo,
+        };
+
         UpdateRecentFiles(vm);
+        UpdateRecentVideos(vm);
 
         var menu = vm.Menu;
         menu.DataContext = vm;
@@ -45,20 +52,7 @@ public static class InitMenu
         // the menu itself closes (#13325).
         WindowService.SuspendUndockedTopmostWhileOpen(menu);
 
-        // Drop the menu's font one notch below the theme default and tighten
-        // each item's vertical padding — a denser menu reads better when there
-        // are this many entries. The style targets nested MenuItems so submenu
-        // items inherit the same look.
-        menu.FontSize = MenuFontSize;
-        menu.Styles.Add(new Style(x => x.OfType<MenuItem>())
-        {
-            Setters =
-            {
-                new Setter(MenuItem.FontSizeProperty, MenuFontSize),
-                new Setter(MenuItem.PaddingProperty, new Thickness(10, 1)),
-                new Setter(MenuItem.MinHeightProperty, 23.0),
-            },
-        });
+        ApplyFontSize(menu);
 
         menu.Items.Add(new MenuItem
         {
@@ -97,7 +91,7 @@ public static class InitMenu
                 {
                     Header = l.OpenOriginal,
                     Command = vm.FileOpenOriginalCommand,
-                    [!MenuItem.IsVisibleProperty] = new Binding(nameof(vm.ShowColumnOriginalText)) { Converter = new InverseBooleanConverter() }
+                    [!MenuItem.IsVisibleProperty] = new Binding(nameof(vm.ShowColumnOriginalText)) { Converter = InverseBooleanConverter.Instance }
                 },
                 new MenuItem
                 {
@@ -405,7 +399,7 @@ public static class InitMenu
                 {
                     Header = l.RightToLeftMode,
                     Command = vm.RightToLeftToggleCommand,
-                    [!Visual.IsVisibleProperty] = new Binding(nameof(vm.IsRightToLeftEnabled)) { Converter = new InverseBooleanConverter() },
+                    [!Visual.IsVisibleProperty] = new Binding(nameof(vm.IsRightToLeftEnabled)) { Converter = InverseBooleanConverter.Instance },
                 },
                 new MenuItem
                 {
@@ -467,6 +461,11 @@ public static class InitMenu
             {
                 Header = l.BeautifyTimeCodes,
                 Command = vm.ShowBeautifyTimeCodesCommand,
+            },
+            new MenuItem
+            {
+                Header = l.ImproveTimeCodes,
+                Command = vm.ShowImproveTimeCodesCommand,
             },
             new MenuItem
             {
@@ -655,6 +654,17 @@ public static class InitMenu
             },
             new MenuItem
             {
+                // ACE-Step 1.5 (audio.cpp) music, looped to the video's length.
+                Header = Se.Language.Video.BackgroundMusic.GenerateBackgroundMusicDotDotDot,
+                Command = vm.ShowVideoBackgroundMusicCommand,
+            },
+            new MenuItem
+            {
+                Header = Se.Language.Video.RemuxVideoDotDotDot,
+                Command = vm.ShowVideoRemuxVideoCommand,
+            },
+            new MenuItem
+            {
                 // Finds who speaks in the video, clones each of them and assigns the cast, so the
                 // whole thing can be dubbed in its own voices (#13698).
                 Header = Se.Language.Video.TextToSpeech.AutoCastMenuItem,
@@ -716,6 +726,7 @@ public static class InitMenu
                     Header = l.OpenVideoFromUrl,
                     Command = vm.ShowVideoOpenFromUrlCommand,
                 },
+                vm.MenuRecentVideos,
                 new MenuItem
                 {
                     Header = l.CloseVideoFile,
@@ -723,19 +734,21 @@ public static class InitMenu
                 },
                 // Same spot and wording as SE4's Video menu, so it can be found by anyone
                 // looking for it there (#14389). Only meaningful with a video to draw on.
+                // Stays available while a second subtitle is shown: opening again replaces
+                // it, so its style can be adjusted without removing it first (#13492).
                 new MenuItem
                 {
                     Header = Se.Language.Video.OpenSecondarySubtitleOnVideoPlayerDotDotDot,
                     Command = vm.OpenSecondarySubtitleCommand,
-                    [!Visual.IsVisibleProperty] = new MultiBinding
-                    {
-                        Converter = BoolConverters.And,
-                        Bindings =
-                        {
-                            new Binding(nameof(vm.IsVideoLoaded)),
-                            new Binding(nameof(vm.IsSubtitleSecondaryVisible)) { Converter = new InverseBooleanConverter() },
-                        },
-                    },
+                    [!Visual.IsVisibleProperty] = new Binding(nameof(vm.IsVideoLoaded)),
+                },
+                // Re-styles the current second subtitle without the file picker (#15110).
+                // Shown whenever there is a second subtitle to edit.
+                new MenuItem
+                {
+                    Header = Se.Language.Video.EditSecondarySubtitleSettingsDotDotDot,
+                    Command = vm.EditSecondarySubtitleSettingsCommand,
+                    [!Visual.IsVisibleProperty] = new Binding(nameof(vm.IsSubtitleSecondaryVisible)),
                 },
                 new MenuItem
                 {
@@ -768,6 +781,11 @@ public static class InitMenu
                 {
                     Header = l.TextToSpeech,
                     Command = vm.ShowVideoTextToSpeechCommand,
+                },
+                new MenuItem
+                {
+                    Header = Se.Language.Video.TextToSpeech.VoiceManagerMenuItem,
+                    Command = vm.ShowVideoVoiceManagerCommand,
                 },
                 new MenuItem
                 {
@@ -812,7 +830,7 @@ public static class InitMenu
                 {
                     Header = l.UndockVideoControls,
                     Command = vm.VideoUndockControlsCommand,
-                    [!MenuItem.IsVisibleProperty] = new Binding(nameof(vm.AreVideoControlsUndocked)) {  Converter = new InverseBooleanConverter() },
+                    [!MenuItem.IsVisibleProperty] = new Binding(nameof(vm.AreVideoControlsUndocked)) {  Converter = InverseBooleanConverter.Instance },
                 },
                 new MenuItem
                 {
@@ -824,7 +842,7 @@ public static class InitMenu
                 {
                     Header = l.ToggleSelectSubtitleWhilePlayingCurrentlyOff,
                     Command = vm.ToggleCurrentSubtitleWhilePlayingCommand,
-                    [!MenuItem.IsVisibleProperty] = new Binding(nameof(vm.SelectCurrentSubtitleWhilePlaying)) {  Converter = new InverseBooleanConverter() },
+                    [!MenuItem.IsVisibleProperty] = new Binding(nameof(vm.SelectCurrentSubtitleWhilePlaying)) {  Converter = InverseBooleanConverter.Instance },
                 },
                 new MenuItem
                 {
@@ -1053,16 +1071,92 @@ public static class InitMenu
         menu.Items.Add(menuItemSsaTools);
     }
 
+    private static void PopulateRecentMenu<T>(
+        MenuItem? menu,
+        IReadOnlyList<T> items,
+        Func<T, (string Header, string ToolTip, ICommand Command, object? Parameter)> itemFactory,
+        string clearHeader,
+        ICommand clearCommand)
+    {
+        if (menu == null)
+        {
+            return;
+        }
+
+        menu.Items.Clear();
+        if (items.Count > 0)
+        {
+            foreach (var item in items)
+            {
+                var (header, tooltip, command, parameter) = itemFactory(item);
+                var menuItem = new MenuItem
+                {
+                    Header = new TextBlock
+                    {
+                        Text = header,
+                        TextTrimming = TextTrimming.PrefixCharacterEllipsis,
+                        MaxWidth = 600,
+                    },
+                    Command = command,
+                    CommandParameter = parameter,
+                    [ToolTip.TipProperty] = tooltip,
+                };
+                menu.Items.Add(menuItem);
+            }
+
+            menu.Items.Add(new Separator());
+            var clearItem = new MenuItem
+            {
+                Header = clearHeader,
+                Command = clearCommand,
+            };
+            menu.Items.Add(clearItem);
+            menu.IsVisible = true;
+        }
+        else
+        {
+            menu.IsVisible = false;
+        }
+    }
+
+    private static Style? _menuFontStyle;
+
+    /// <summary>
+    /// Drops the menu's font one notch below the theme default and tightens each item's
+    /// vertical padding - a denser menu reads better when there are this many entries. The
+    /// style targets nested MenuItems so submenu items inherit the same look. Re-run after the
+    /// settings dialog so a changed font scale (#14812) reaches the main menu without a restart;
+    /// the previous style is swapped out so the items re-evaluate.
+    /// </summary>
+    public static void ApplyFontSize(Menu menu)
+    {
+        if (_menuFontStyle != null)
+        {
+            menu.Styles.Remove(_menuFontStyle);
+        }
+
+        menu.FontSize = UiUtil.ScaledFontSize(MenuFontSize);
+        _menuFontStyle = new Style(x => x.OfType<MenuItem>())
+        {
+            Setters =
+            {
+                new Setter(MenuItem.FontSizeProperty, UiUtil.ScaledFontSize(MenuFontSize)),
+                new Setter(MenuItem.PaddingProperty, new Thickness(10, 1)),
+                new Setter(MenuItem.MinHeightProperty, 23.0),
+            },
+        };
+        menu.Styles.Add(_menuFontStyle);
+    }
+
     public static void UpdateRecentFiles(MainViewModel vm)
     {
         var files = Se.Settings.File.RecentFiles.Where(p => !string.IsNullOrEmpty(p.SubtitleFileName) && System.IO.File.Exists(p.SubtitleFileName)).ToList();
-        vm.MenuReopen.Items.Clear();
-        if (files.Count > 0)
-        {
-            foreach (var file in files)
+        PopulateRecentMenu(
+            vm.MenuReopen,
+            files,
+            file =>
             {
                 var header = file.SubtitleFileName;
-
                 if (!string.IsNullOrEmpty(file.SubtitleFileNameOriginal) && System.IO.File.Exists(file.SubtitleFileNameOriginal))
                 {
                     header += " + ";
@@ -1075,39 +1169,25 @@ public static class InitMenu
                         header += file.SubtitleFileNameOriginal;
                     }
                 }
+                return (header, header, vm.CommandFileReopenCommand, file);
+            },
+            Se.Language.Main.Menu.ClearRecentFiles,
+            vm.CommandFileClearRecentFilesCommand);
+    }
 
-                // Trim the directory prefix with "…" when the path is too long so
-                // the filename stays visible. Full path is still available via tooltip.
-                var item = new MenuItem
-                {
-                    Header = new TextBlock
-                    {
-                        Text = header,
-                        TextTrimming = TextTrimming.PrefixCharacterEllipsis,
-                        MaxWidth = 600,
-                    },
-                    Command = vm.CommandFileReopenCommand,
-                    CommandParameter = file,
-                    [ToolTip.TipProperty] = header,
-                };
-                vm.MenuReopen.Items.Add(item);
-            }
+    public static void UpdateRecentVideos(MainViewModel vm)
+    {
+        var files = Se.Settings.Video.RecentFiles
+            .Where(f => !string.IsNullOrWhiteSpace(f))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
-            vm.MenuReopen.Items.Add(new Separator());
-
-            var clearItem = new MenuItem
-            {
-                Header = Se.Language.Main.Menu.ClearRecentFiles,
-                Command = vm.CommandFileClearRecentFilesCommand,
-            };
-            vm.MenuReopen.Items.Add(clearItem);
-
-            vm.MenuReopen.IsVisible = true;
-        }
-        else
-        {
-            vm.MenuReopen.IsVisible = false;
-        }
+        PopulateRecentMenu(
+            vm.MenuRecentVideos,
+            files,
+            file => (file, file, vm.CommandVideoReopenCommand, file),
+            Se.Language.Video.ClearRecentVideos,
+            vm.CommandVideoClearRecentFilesCommand);
     }
 
     /// <summary>
@@ -1118,10 +1198,7 @@ public static class InitMenu
     {
         vm.MenuPlugins.Items.Clear();
 
-        var enabledPlugins = vm.GetInstalledPlugins()
-            .Where(p => !Se.Settings.Plugins.DisabledPluginNames.Contains(p.Manifest.Name))
-            .OrderBy(p => p.Manifest.Name)
-            .ToList();
+        var enabledPlugins = vm.PluginShortcutEntries;
         if (enabledPlugins.Count == 0)
         {
             vm.MenuPlugins.Items.Add(new MenuItem
@@ -1132,14 +1209,15 @@ public static class InitMenu
         }
         else
         {
-            foreach (var plugin in enabledPlugins)
+            // Per-plugin command so the gesture lookup in DisplayShortcuts (by command
+            // reference) finds the plugin's own shortcut.
+            foreach (var entry in enabledPlugins)
             {
                 vm.MenuPlugins.Items.Add(new MenuItem
                 {
-                    Header = plugin.Manifest.Name,
-                    Command = vm.RunPluginCommand,
-                    CommandParameter = plugin,
-                    IsEnabled = plugin.CanRun,
+                    Header = entry.Plugin.Manifest.Name.Replace("_", "__"), // a single "_" is an access-key marker
+                    Command = entry.Command,
+                    IsEnabled = entry.Plugin.CanRun,
                 });
             }
         }

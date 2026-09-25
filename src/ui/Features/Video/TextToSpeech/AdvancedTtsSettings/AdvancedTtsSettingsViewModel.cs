@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.Input;
 using Nikse.SubtitleEdit.Features.Video.TextToSpeech.Engines;
 using Nikse.SubtitleEdit.Logic.Config;
 using Nikse.SubtitleEdit.Logic.Media;
+using Nikse.SubtitleEdit.Logic;
 using System;
 using System.Threading.Tasks;
 
@@ -14,6 +15,7 @@ public partial class AdvancedTtsSettingsViewModel : ObservableObject
 {
     [ObservableProperty] private bool _doProAudioChain;
     [ObservableProperty] private bool _doAudioDucking;
+    [ObservableProperty] private bool _doRemoveOriginalSpeech;
     [ObservableProperty] private int _audioDuckingVolume;
     [ObservableProperty] private bool _doVadSilenceCompression;
     [ObservableProperty] private int _vadMaxSilenceMs;
@@ -42,6 +44,7 @@ public partial class AdvancedTtsSettingsViewModel : ObservableObject
         var s = Se.Settings.Video.TextToSpeech;
         DoProAudioChain = s.ProAudioChainEnabled;
         DoAudioDucking = s.AudioDuckingEnabled;
+        DoRemoveOriginalSpeech = s.RemoveOriginalSpeech;
         AudioDuckingVolume = s.AudioDuckingOriginalVolume;
         DoVadSilenceCompression = s.VadSilenceCompressionEnabled;
         VadMaxSilenceMs = (int)Math.Round(s.VadMaxSilenceSeconds * 1000);
@@ -71,6 +74,7 @@ public partial class AdvancedTtsSettingsViewModel : ObservableObject
         var s = Se.Settings.Video.TextToSpeech;
         s.ProAudioChainEnabled = DoProAudioChain;
         s.AudioDuckingEnabled = DoAudioDucking;
+        s.RemoveOriginalSpeech = DoRemoveOriginalSpeech;
         s.AudioDuckingOriginalVolume = AudioDuckingVolume;
         s.VadSilenceCompressionEnabled = DoVadSilenceCompression;
         s.VadMaxSilenceSeconds = VadMaxSilenceMs / 1000.0;
@@ -100,6 +104,11 @@ public partial class AdvancedTtsSettingsViewModel : ObservableObject
         {
             e.Handled = true;
             Window?.Close();
+        }
+        else if (UiUtil.IsHelp(e))
+        {
+            e.Handled = true;
+            UiUtil.ShowHelp("features/text-to-speech", "engine-settings");
         }
     }
 }

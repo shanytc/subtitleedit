@@ -7,6 +7,7 @@ using Avalonia.Threading;
 using Nikse.SubtitleEdit.Controls.VideoPlayer;
 using Nikse.SubtitleEdit.Logic.Config;
 using Nikse.SubtitleEdit.Logic.VideoPlayers;
+using Nikse.SubtitleEdit.Logic.VideoPlayers.Ffmpeg;
 using Nikse.SubtitleEdit.Logic.VideoPlayers.LibMpvDynamic;
 using System;
 
@@ -73,26 +74,18 @@ public static class InitVideoPlayer
 
             Dispatcher.UIThread.Post(async () =>
             {
-                await control.Open(mediaFile);
+                // Opened at the position, like the fullscreen and undocked players: a file
+                // opened at 0 and seeked afterwards shows the first frame for a moment and
+                // then jumps (#13329, issue #15027).
+                await control.Open(mediaFile, position);
                 await control.WaitForPlayersReadyAsync();
 
-                // A second rebuild within the ready wait (Options/OK, dock/undock) disposes
-                // this control's player via the block above - stop restoring into it (#13083).
-                for (var i = 0; i < 10; i++)
-                {
-                    await System.Threading.Tasks.Task.Delay(10);
-                    if (control.IsDisposed)
-                    {
-                        return;
-                    }
-
-                    control.Position = position;
-                }
-
-                // Only if the player really got there - the loop above is a fixed 100 ms of
-                // seeks, so a player still loading when it runs out would otherwise be handed
-                // back as the truth while it still reports 0 (issue #14218).
-                control.EndPositionRestoreIfArrived();
+                // Seeks until the player reports it arrived, and bails out when a second rebuild
+                // within the ready wait (Options/OK, dock/undock) disposes this control's player
+                // via the block above (#13083). Doing this by hand here - ten assignments to
+                // Position - is what left the video, and with it the waveform, at 0:00 after a
+                // settings change on a long file (issue #14741).
+                await control.RestorePositionAsync(position);
             });
         }
 
@@ -137,6 +130,16 @@ public static class InitVideoPlayer
                 if (player.CanLoad())
                 {
                     var view = new LibVlcDynamicNativeControl(player);
+                    return MakeVideoPlayerControl(player, view);
+                }
+            }
+
+            if (Se.Settings.Video.VideoPlayer.Equals(VideoPlayerName.Ffmpeg, StringComparison.OrdinalIgnoreCase))
+            {
+                var player = new FfmpegPlayer();
+                if (player.CanLoad())
+                {
+                    var view = new FfmpegSoftwareControl(player);
                     return MakeVideoPlayerControl(player, view);
                 }
             }
@@ -190,7 +193,7 @@ public static class InitVideoPlayer
     /// </summary>
     public static VideoPlayerControl MakeVideoPlayerPreferNonNative()
     {
-        if (OperatingSystem.IsWindows() && Se.Settings.Video.VideoPlayer != VideoPlayerName.MpvOpenGl)
+        if (OperatingSystem.IsWindows() && Se.Settings.Video.VideoPlayer != VideoPlayerName.MpvOpenGl && Se.Settings.Video.VideoPlayer != VideoPlayerName.Ffmpeg)
         {
             var player = new LibMpvDynamicPlayer();
             if (player.CanLoad())

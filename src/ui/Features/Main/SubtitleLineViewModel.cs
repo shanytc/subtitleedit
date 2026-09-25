@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using Avalonia.Media.Immutable;
 
 namespace Nikse.SubtitleEdit.Features.Main;
 
@@ -167,8 +168,9 @@ public partial class SubtitleLineViewModel : ObservableObject
     }
 
     /// <summary>
-    /// True while an EBU STL subtitle is open, so a row wider than a teletext page counts as a
-    /// "text too long" error. Set from MainViewModel when the format changes.
+    /// True while a teletext subtitle is open (DVB teletext, or EBU STL whose header says teletext
+    /// rather than open subtitling), so a row wider than a teletext page counts as a "text too long"
+    /// error. Set from MainViewModel when the format, the file or the EBU header changes.
     /// </summary>
     public static bool UseTeletextLineLength { get; set; }
 
@@ -211,15 +213,15 @@ public partial class SubtitleLineViewModel : ObservableObject
 
     private bool _skipUpdate = false;
 
-    private static SolidColorBrush _errorBrush = new SolidColorBrush(Se.Settings.General.ErrorColor.FromHexToColor());
-    private static SolidColorBrush _transparentBrush = new SolidColorBrush(Colors.Transparent);
+    private static IBrush _errorBrush = new ImmutableSolidColorBrush(Se.Settings.General.ErrorColor.FromHexToColor());
+    private static readonly IBrush _transparentBrush = new ImmutableSolidColorBrush(Colors.Transparent);
     public static Color ErrorColor
     {
         get => field;
         set
         {
             field = value;
-            _errorBrush = new SolidColorBrush(value);
+            _errorBrush = new ImmutableSolidColorBrush(value);
         }
     } = Se.Settings.General.ErrorColor.FromHexToColor();
 
@@ -314,15 +316,15 @@ public partial class SubtitleLineViewModel : ObservableObject
 
     public Paragraph ToParagraph(SubtitleFormat? subtitleFormat = null)
     {
-        var p = new Paragraph()
+        // The (start, end, text) constructor: "new Paragraph()" makes two TimeCodes of its own
+        // that the initializer then replaced - and this runs for every row on every
+        // GetUpdateSubtitle.
+        // TrimEnd: the edit text box is bound raw, so a trailing Enter lives in Text
+        // until the row loses selection - it must never reach saved files or tools
+        // (SE4 kept the same invariant by trimming in the TextChanged handler) - #13389.
+        var p = new Paragraph(new TimeCode(StartTime), new TimeCode(EndTime), Text.TrimEnd())
         {
             Number = Number,
-            StartTime = new TimeCode(StartTime),
-            EndTime = new TimeCode(EndTime),
-            // TrimEnd: the edit text box is bound raw, so a trailing Enter lives in Text
-            // until the row loses selection - it must never reach saved files or tools
-            // (SE4 kept the same invariant by trimming in the TextChanged handler) - #13389.
-            Text = Text.TrimEnd(),
             Actor = Actor,
             Style = Style,
             Language = Language,
@@ -348,12 +350,9 @@ public partial class SubtitleLineViewModel : ObservableObject
 
     public Paragraph ToParagraphOriginal(SubtitleFormat? subtitleFormat = null)
     {
-        var p = new Paragraph
+        var p = new Paragraph(new TimeCode(StartTime), new TimeCode(EndTime), OriginalText.TrimEnd())
         {
             Number = Number,
-            StartTime = new TimeCode(StartTime),
-            EndTime = new TimeCode(EndTime),
-            Text = OriginalText.TrimEnd(),
             Actor = Actor,
             Style = Style,
             Language = Language,
@@ -1246,7 +1245,7 @@ public partial class SubtitleLineViewModel : ObservableObject
     /// The CPS the error rules compare against. The cell tints have to use this too, or a row can
     /// be painted red and still be invisible to "list errors" and to error navigation.
     /// </summary>
-    private double CpsRounded => Math.Round(CharactersPerSecond, 2, MidpointRounding.AwayFromZero);
+    private double CpsRounded => CpsHelper.Round(CharactersPerSecond);
 
     public bool HasErrors(SubtitleLineViewModel? prev, SubtitleLineViewModel? next)
     {

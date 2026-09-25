@@ -483,15 +483,58 @@ public partial class OcrViewModel : ObservableObject
         var threeLetter = code.Length == 3 ? code : Iso639Dash2LanguageCode.GetThreeLetterCodeFromTwoLetterCode(code);
         var twoLetter = code.Length == 2 ? code : Iso639Dash2LanguageCode.GetTwoLetterCodeFromThreeLetterCode(code);
 
-        var match = Dictionaries.FirstOrDefault(d =>
+        var candidates = Dictionaries.Where(d =>
             d.Name != GetDictionaryNameNone() &&
             ((!string.IsNullOrEmpty(threeLetter) && d.GetThreeLetterCode() == threeLetter) ||
-             (!string.IsNullOrEmpty(twoLetter) && SpellCheckDictionaryDisplay.GetTwoLetterLanguageCode(d) == twoLetter)));
+             (!string.IsNullOrEmpty(twoLetter) && SpellCheckDictionaryDisplay.GetTwoLetterLanguageCode(d) == twoLetter))).ToList();
 
+        var match = PickDictionaryForLanguage(candidates, SelectedDictionary, Se.Settings.Ocr.LastDictionaryFilePerLanguage);
         if (match != null && !ReferenceEquals(match, SelectedDictionary))
         {
             SelectedDictionary = match;
         }
+    }
+
+    /// <summary>
+    /// Picks among the installed dictionaries of one language. A language can have several
+    /// ("en_AU", "en_GB", "en_US"), and taking the first one threw away the user's regional choice
+    /// on every OCR language change: the dictionary remembered for the language wins, then the
+    /// current selection when it already is of that language, then the first installed one.
+    /// </summary>
+    internal static SpellCheckDictionaryDisplay? PickDictionaryForLanguage(
+        List<SpellCheckDictionaryDisplay> candidates,
+        SpellCheckDictionaryDisplay? current,
+        Dictionary<string, string>? lastDictionaryFilePerLanguage)
+    {
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        var twoLetter = SpellCheckDictionaryDisplay.GetTwoLetterLanguageCode(candidates[0]);
+        if (lastDictionaryFilePerLanguage != null &&
+            lastDictionaryFilePerLanguage.TryGetValue(twoLetter, out var rememberedFile))
+        {
+            var remembered = candidates.FirstOrDefault(d =>
+                Path.GetFileName(d.DictionaryFileName).Equals(rememberedFile, StringComparison.OrdinalIgnoreCase));
+            if (remembered != null)
+            {
+                return remembered;
+            }
+        }
+
+        return current != null && candidates.Contains(current) ? current : candidates[0];
+    }
+
+    partial void OnSelectedDictionaryChanged(SpellCheckDictionaryDisplay? value)
+    {
+        if (value == null || string.IsNullOrEmpty(value.DictionaryFileName))
+        {
+            return;
+        }
+
+        Se.Settings.Ocr.LastDictionaryFilePerLanguage ??= new Dictionary<string, string>();
+        Se.Settings.Ocr.LastDictionaryFilePerLanguage[SpellCheckDictionaryDisplay.GetTwoLetterLanguageCode(value)] = Path.GetFileName(value.DictionaryFileName);
     }
 
     /// <summary>
@@ -606,9 +649,10 @@ public partial class OcrViewModel : ObservableObject
         // Trailing dot-separated language tag like "movie.nl.sub" or "movie.dut.forced.sub"
         // (the extension is already removed). Walk backwards past common non-language subtitle
         // markers; "hi" is treated as hearing-impaired, not Hindi, as that reading is far more
-        // common in subtitle file names. Three-letter tokens must be lowercase so capitalized
-        // title words ("Big.Ben") are not mistaken for language codes; only the last two
-        // candidate tokens are considered so tokens deep inside the title cannot match.
+        // common in subtitle file names. Three-letter tokens must be lowercase, and two-letter
+        // ones must not be capitalized, so title words ("Big.Ben", "Dr.No") are not mistaken
+        // for language codes; only the last two candidate tokens are considered so tokens deep
+        // inside the title cannot match.
         var tokens = name.Split('.');
         var checkedTokens = 0;
         for (var i = tokens.Length - 1; i > 0 && checkedTokens < 2; i--)
@@ -626,6 +670,13 @@ public partial class OcrViewModel : ObservableObject
             }
 
             if (token.Length == 3 && token != token.ToLowerInvariant())
+            {
+                continue;
+            }
+
+            // A two-letter tag is "nl" or "NL". "No", "It", "Be", "Am", "Is", "My" are title words
+            // ("Dr.No", "Let.It.Be") - and batch convert OCRs with whatever comes back from here.
+            if (token.Length == 2 && char.IsUpper(token[0]) && char.IsLower(token[1]))
             {
                 continue;
             }
@@ -2284,7 +2335,7 @@ public partial class OcrViewModel : ObservableObject
         for (var i = 0; i < OcrSubtitleItems.Count; i++)
         {
             var item = OcrSubtitleItems[i];
-            foreach (var groupText in SplitTextByAlignmentGroups(item.Text))
+            foreach (var groupText in OcrAssaAlignment.SplitTextByAlignmentGroups(item.Text))
             {
                 OcredSubtitle.Add(new SubtitleLineViewModel
                 {
@@ -2297,58 +2348,6 @@ public partial class OcrViewModel : ObservableObject
         }
 
         Close();
-    }
-
-    private static readonly Regex AlignmentTagRegex = new(@"^\{\\an[1-9]\}", RegexOptions.Compiled);
-
-    // Splits text into groups of lines sharing the same leading {\anN} alignment tag.
-    // A line without a tag continues the current group. Returns the original text as a single
-    // group when fewer than two distinct alignments are present.
-    private static List<string> SplitTextByAlignmentGroups(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return new List<string> { text };
-        }
-
-        var lines = text.SplitToLines();
-        var groups = new List<List<string>>();
-        var currentTag = string.Empty;
-        var currentLines = new List<string>();
-
-        foreach (var line in lines)
-        {
-            var match = AlignmentTagRegex.Match(line);
-            var tag = match.Success ? match.Value : string.Empty;
-
-            if (currentLines.Count == 0)
-            {
-                currentTag = tag;
-                currentLines.Add(line);
-            }
-            else if (tag.Length > 0 && tag != currentTag)
-            {
-                groups.Add(currentLines);
-                currentTag = tag;
-                currentLines = new List<string> { line };
-            }
-            else
-            {
-                currentLines.Add(line);
-            }
-        }
-
-        if (currentLines.Count > 0)
-        {
-            groups.Add(currentLines);
-        }
-
-        if (groups.Count <= 1)
-        {
-            return new List<string> { text };
-        }
-
-        return groups.Select(g => string.Join("\n", g)).ToList();
     }
 
     [RelayCommand]
@@ -2372,46 +2371,54 @@ public partial class OcrViewModel : ObservableObject
             return;
         }
 
-        var selectedIndices = new List<int>();
-        foreach (var selectedItem in selectedItems)
+        // Row -> index once: a Contains here plus a Remove per row below searched the whole
+        // collection for every selected row, which froze a select-all delete on a long OCR job.
+        var rowIndexes = new Dictionary<OcrSubtitleItem, int>(OcrSubtitleItems.Count);
+        for (var i = 0; i < OcrSubtitleItems.Count; i++)
         {
-            if (selectedItem is OcrSubtitleItem item)
-            {
-                var idx = OcrSubtitleItems.IndexOf(item);
-                if (idx >= 0)
-                {
-                    selectedIndices.Add(idx);
-
-                    var remov = UnknownWords.Where(uw => uw.Item == item).ToList();
-                    foreach (var unknownWord in remov)
-                    {
-                        UnknownWords.Remove(unknownWord);
-                    }
-                }
-            }
+            rowIndexes.TryAdd(OcrSubtitleItems[i], i);
         }
 
-        var itemsToRemove = selectedIndices
-            .Select(idx => OcrSubtitleItems[idx])
+        var itemsToRemove = selectedItems
+            .OfType<OcrSubtitleItem>()
+            .Where(item => rowIndexes.ContainsKey(item))
+            .Distinct()
             .ToList();
-
-        foreach (var item in itemsToRemove)
+        if (itemsToRemove.Count == 0)
         {
-            OcrSubtitleItems.Remove(item);
-            _allOcrSubtitleItems.Remove(item);
+            return;
         }
 
-        //foreach (var index in selectedIndices.OrderByDescending(p => p))
-        //{
-        //    _ocrSubtitle?.Delete(index);
-        //}
+        // Removing the focused row's container drops keyboard focus to null synchronously,
+        // so decide whether the grid should get it back before anything is removed.
+        var gridHadFocus = IsSubtitleGridFocusedOrFocusDropped();
+        var survivor = PickRowToSelectAfterRemoval(itemsToRemove);
+
+        // Hand the selection to the survivor before the rows go (#14708). Removing the selected
+        // rows first emptied the selection, which the TwoWay SelectedItem binding wrote back as
+        // null - the row highlight vanished and the grid scrolled to wherever its own fallback
+        // landed. With the survivor already the single selected row, the selection never empties.
+        if (survivor != null)
+        {
+            SubtitleGrid.SelectedItem = survivor;
+        }
+
+        // Bottom up, so the indexes of the rows still to go stay valid.
+        foreach (var index in itemsToRemove.Select(item => rowIndexes[item]).OrderByDescending(index => index))
+        {
+            OcrSubtitleItems.RemoveAt(index);
+        }
+
+        var removed = new HashSet<OcrSubtitleItem>(itemsToRemove);
+        _allOcrSubtitleItems.RemoveAll(removed.Contains);
 
         Renumber();
 
+        var remaining = new HashSet<OcrSubtitleItem>(_allOcrSubtitleItems);
         var toRemove = new List<UnknownWordItem>();
         foreach (var unknownWord in UnknownWords)
         {
-            if (!_allOcrSubtitleItems.Contains(unknownWord.Item)) // OcrSubtitleItems may be filtered to forced-only
+            if (!remaining.Contains(unknownWord.Item)) // OcrSubtitleItems may be filtered to forced-only
             {
                 toRemove.Add(unknownWord);
             }
@@ -2421,6 +2428,81 @@ public partial class OcrViewModel : ObservableObject
         {
             UnknownWords.Remove(item);
         }
+
+        if (survivor != null)
+        {
+            SelectedOcrSubtitleItem = survivor;
+            SubtitleGrid.SelectedItem = survivor;
+            SelectAndScrollToRow(OcrSubtitleItems.IndexOf(survivor));
+        }
+        else
+        {
+            SelectedOcrSubtitleItem = null;
+            SubtitleGrid.SelectedItem = null;
+        }
+
+        if (gridHadFocus)
+        {
+            Dispatcher.UIThread.Post(() => TableViewExtras.FocusRow(SubtitleGrid), DispatcherPriority.Background);
+        }
+    }
+
+    /// <summary>
+    /// The row that becomes current once <paramref name="rowsToRemove"/> are gone: the first
+    /// surviving row below the first removed one (the line that visually takes its place),
+    /// else the last surviving row above it. Null when nothing is left to select.
+    /// </summary>
+    private OcrSubtitleItem? PickRowToSelectAfterRemoval(IReadOnlyCollection<OcrSubtitleItem> rowsToRemove)
+    {
+        var removeSet = new HashSet<OcrSubtitleItem>(rowsToRemove);
+
+        var firstIndex = -1;
+        for (var i = 0; i < OcrSubtitleItems.Count; i++)
+        {
+            if (removeSet.Contains(OcrSubtitleItems[i]))
+            {
+                firstIndex = i;
+                break;
+            }
+        }
+
+        if (firstIndex < 0)
+        {
+            return null;
+        }
+
+        for (var i = firstIndex + 1; i < OcrSubtitleItems.Count; i++)
+        {
+            if (!removeSet.Contains(OcrSubtitleItems[i]))
+            {
+                return OcrSubtitleItems[i];
+            }
+        }
+
+        for (var i = firstIndex - 1; i >= 0; i--)
+        {
+            if (!removeSet.Contains(OcrSubtitleItems[i]))
+            {
+                return OcrSubtitleItems[i];
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// True when keyboard focus is on the subtitle grid (or one of its rows), or on nothing
+    /// in particular (the window root), which is where focus lands after a row removal.
+    /// </summary>
+    private bool IsSubtitleGridFocusedOrFocusDropped()
+    {
+        var focused = Window?.FocusManager?.GetFocusedElement();
+        if (focused == null || ReferenceEquals(focused, Window))
+        {
+            return true;
+        }
+
+        return SubtitleGrid.IsFocused || SubtitleGrid.IsKeyboardFocusWithin;
     }
 
     private void Renumber()
@@ -4139,6 +4221,8 @@ public partial class OcrViewModel : ObservableObject
                         return;
                     }
 
+                    text = await RetryTesseractIfNeededAsync(tesseractOcr, bitmap, i, text, language, tessDataFolder, engineMode, cancellationToken);
+
                     processedCount++;
                     if (!string.IsNullOrWhiteSpace(text))
                     {
@@ -4185,6 +4269,104 @@ public partial class OcrViewModel : ObservableObject
                 PauseOcr();
             }
         });
+    }
+
+    /// <summary>
+    /// SE4's Tesseract retry (VobSubOcr.TesseractResizeAndRetry): when the first pass is blank or
+    /// leaves unknown words, run again on the image stretched 3x/2x with automatic layout, and if
+    /// that is still blank on 4x/2x as a single line. The retry is kept only when the dictionary
+    /// rates it better and it does not invent a digit (discussion #12929: "Yeanh" → "Yeah",
+    /// "houir" → "hour", a blank "I..." line recovered; "18 months" must not become "718 months").
+    /// </summary>
+    private async Task<string> RetryTesseractIfNeededAsync(TesseractOcr tesseractOcr, SKBitmap bitmap, int index, string text, string language, string tessDataFolder, int engineMode, CancellationToken cancellationToken)
+    {
+        var blank = string.IsNullOrWhiteSpace(text);
+        var score = blank ? null : CountTesseractWords(index, text);
+        if (!blank && (score == null || (score.Value.unknown == 0 && score.Value.correct > 0)))
+        {
+            return text;
+        }
+
+        var retry = await tesseractOcr.Ocr(bitmap, language, tessDataFolder, cancellationToken, engineMode, TesseractOcr.PsmAuto, 3, 2);
+        if (string.IsNullOrWhiteSpace(retry))
+        {
+            retry = await tesseractOcr.Ocr(bitmap, language, tessDataFolder, cancellationToken, engineMode, TesseractOcr.PsmSingleLine, 4, 2);
+        }
+
+        if (string.IsNullOrWhiteSpace(retry))
+        {
+            return text;
+        }
+
+        if (blank)
+        {
+            return retry;
+        }
+
+        var retryScore = CountTesseractWords(index, retry);
+        if (retryScore == null)
+        {
+            return text;
+        }
+
+        if (retryScore.Value.unknown < score!.Value.unknown &&
+            retryScore.Value.correct >= score.Value.correct &&
+            !TesseractOcr.RetryIntroducesDigit(text, retry))
+        {
+            return retry;
+        }
+
+        // The retry as a whole was worse or suspicious - still take its reading of the words the
+        // first pass got wrong, if it lines up word for word ("diedq," → "died," while the "18"
+        // the retry read as "718" stays).
+        var merged = TesseractOcr.MergeRetryUnknownWords(text, retry, score.Value.unknownWords);
+        if (merged != null)
+        {
+            var mergedScore = CountTesseractWords(index, merged);
+            if (mergedScore != null &&
+                mergedScore.Value.unknown < score.Value.unknown &&
+                mergedScore.Value.correct >= score.Value.correct)
+            {
+                return merged;
+            }
+        }
+
+        return text;
+    }
+
+    /// <summary>
+    /// Dictionary verdict on one OCR pass: how many words the fix engine still flags as unknown
+    /// and how many it accepts. Null when no dictionary is in use, in which case nothing can be
+    /// compared and the first pass stands.
+    /// </summary>
+    private (int unknown, int correct, List<string> unknownWords)? CountTesseractWords(int index, string text)
+    {
+        if (SelectedDictionary == null || SelectedDictionary.Name == GetDictionaryNameNone() || !_ocrFixEngine.IsLoaded() || !DoFixOcrErrors)
+        {
+            return null;
+        }
+
+        var result = _ocrFixEngine.FixOcrErrors(index, text, DoTryToGuessUnknownWords);
+        var unknownWords = new List<string>();
+        var correct = 0;
+        foreach (var word in result.Words)
+        {
+            if (word.LinePartType != OcrFixLinePartType.Word)
+            {
+                continue;
+            }
+
+            if (word.IsSpellCheckedOk == false)
+            {
+                unknownWords.Add(word.Word);
+            }
+            else if (word.IsSpellCheckedOk == true)
+            {
+                correct++;
+            }
+        }
+
+        return (unknownWords.Count, correct, unknownWords);
     }
 
     private async Task ShowTesseractErrorAsync(string error)
@@ -4313,7 +4495,7 @@ public partial class OcrViewModel : ObservableObject
         // grid fills with blank lines (#13633).
         var engine = new LlamaCppOcr(Se.Settings.Ocr.LlamaCppOcrTimeoutMinutes);
         var selectedModel = SelectedLlamaCppOcrModel?.Model;
-        var prompt = Se.Settings.Ocr.LlamaCppOcrPrompt;
+        var prompt = LlamaCppServerManager.ResolveOcrPrompt(selectedModel, Se.Settings.Ocr.LlamaCppOcrPrompt);
 
         _ = Task.Run(async () =>
         {
@@ -5625,64 +5807,12 @@ public partial class OcrViewModel : ObservableObject
 
         try
         {
-            // Get image position and screen dimensions
             var position = item.GetPosition();
             var screenSize = item.GetScreenSize();
             using var bitmap = item.GetSkBitmapClean(); // fresh bitmap each call; dispose to avoid a native leak
 
-            if (bitmap == null || screenSize.Width == 0 || screenSize.Height == 0)
-            {
-                return (item.Text, false);
-            }
-
-            // Check if image height is larger than approximately 1/3 of screen height
-            var imageHeightRatio = (double)bitmap.Height / screenSize.Height;
-            if (imageHeightRatio > 0.33)
-            {
-                // Try to split lines and set alignment for each line
-                var lines = textToUse.Trim().SplitToLines();
-                if (lines.Count > 1 && textToUse.Length < 40)
-                {
-                    // Similar logic to RunGoogleLensOcr method
-                    var nbmp = new NikseBitmap2(bitmap);
-                    nbmp.MakeOneColor(SKColors.White);
-                    var lineImages = NikseBitmapImageSplitter2.SplitToLinesTransparentOrBlack(nbmp);
-                    var lineImages2 = NikseBitmapImageSplitter2.SplitToLines(nbmp, 20);
-
-                    if (lineImages.Count > 1 || lineImages2.Count > 1)
-                    {
-                        // Multiple lines detected - apply alignment to each line
-                        var lineAlignments = new List<string>();
-                        var multiLineCenterX = position.X + bitmap.Width / 2.0;
-                        var multiLineRelativeX = multiLineCenterX / screenSize.Width;
-
-                        for (int i = 0; i < lines.Count; i++)
-                        {
-                            // Calculate relative Y position for each line
-                            var lineHeight = bitmap.Height / (double)lines.Count;
-                            var lineY = position.Y + (i * lineHeight) + (lineHeight / 2.0);
-                            var lineRelativeY = lineY / screenSize.Height;
-
-                            // Get alignment for this specific line position
-                            lineAlignments.Add(GetAssaPositionFromScreen(multiLineRelativeX, lineRelativeY));
-                        }
-
-                        return ApplyLineAlignmentTags(lines, lineAlignments, textToUse, Se.Settings.General.WriteAn2Tag);
-                    }
-                }
-            }
-
-            // Calculate center point of the image on screen
-            var centerX = position.X + bitmap.Width / 2.0;
-            var centerY = position.Y + bitmap.Height / 2.0;
-
-            // Convert to relative position (0.0 = left/top, 1.0 = right/bottom)
-            var relativeX = centerX / screenSize.Width;
-            var relativeY = centerY / screenSize.Height;
-
-            // Map to ASSA alignment positions (An1-An9)
-            var assaPosition = GetAssaPositionFromScreen(relativeX, relativeY);
-            return ApplyAlignmentTag(textToUse, assaPosition, Se.Settings.General.WriteAn2Tag);
+            return OcrAssaAlignment.Detect(
+                bitmap, position.X, position.Y, screenSize.Width, screenSize.Height, textToUse, Se.Settings.General.WriteAn2Tag);
         }
         catch
         {
@@ -5690,82 +5820,20 @@ public partial class OcrViewModel : ObservableObject
         }
     }
 
-    // "an2" is the default bottom-center alignment, so no tag is needed for it (#12393)
+    // The alignment logic is shared with seconv - see OcrAssaAlignment.
     internal static (string Text, bool AlignmentAdded) ApplyAlignmentTag(string text, string assaPosition, bool writeAn2Tag)
     {
-        if (assaPosition == "an2" && !writeAn2Tag)
-        {
-            return (text, false);
-        }
-
-        return ($"{{\\{assaPosition}}}{text}", true);
+        return OcrAssaAlignment.ApplyAlignmentTag(text, assaPosition, writeAn2Tag);
     }
 
     internal static (string Text, bool AlignmentAdded) ApplyLineAlignmentTags(List<string> lines, List<string> lineAlignments, string originalText, bool writeAn2Tag)
     {
-        if (!writeAn2Tag && lineAlignments.All(p => p == "an2"))
-        {
-            return (originalText, false);
-        }
-
-        var perLine = new List<string>();
-        for (var i = 0; i < lines.Count; i++)
-        {
-            perLine.Add($"{{\\{lineAlignments[i]}}}{lines[i].Trim()}");
-        }
-
-        return (string.Join("\n", perLine), true);
+        return OcrAssaAlignment.ApplyLineAlignmentTags(lines, lineAlignments, originalText, writeAn2Tag);
     }
 
     internal static string GetAssaPositionFromScreen(double relativeX, double relativeY)
     {
-        // Map screen coordinates to 3x3 grid for ASSA positions
-        // relativeX: 0.0 = left, 1.0 = right
-        // relativeY: 0.0 = top, 1.0 = bottom
-
-        string horizontal;
-        if (relativeX < 0.33)
-        {
-            horizontal = "left";   // An1, An4, An7
-        }
-        else if (relativeX > 0.67)
-        {
-            horizontal = "right";  // An3, An6, An9
-        }
-        else
-        {
-            horizontal = "center"; // An2, An5, An8
-        }
-
-        string vertical;
-        if (relativeY < 0.33)
-        {
-            vertical = "bottom";   // An7, An8, An9 (in ASSA, these are at top)
-        }
-        else if (relativeY > 0.67)
-        {
-            vertical = "top";      // An1, An2, An3 (in ASSA, these are at bottom)
-        }
-        else
-        {
-            vertical = "middle";   // An4, An5, An6
-        }
-
-        // Map to ASSA position numbers
-        // Note: ASSA coordinate system has origin at bottom-left
-        return (vertical, horizontal) switch
-        {
-            ("top", "left") => "an1",     // bottom-left
-            ("top", "center") => "an2",   // bottom-center
-            ("top", "right") => "an3",    // bottom-right
-            ("middle", "left") => "an4",  // middle-left
-            ("middle", "center") => "an5", // middle-center
-            ("middle", "right") => "an6", // middle-right
-            ("bottom", "left") => "an7",  // top-left
-            ("bottom", "center") => "an8", // top-center
-            ("bottom", "right") => "an9", // top-right
-            _ => "an5" // default to center
-        };
+        return OcrAssaAlignment.GetAssaPositionFromScreen(relativeX, relativeY);
     }
 
     private List<OcrSubtitleItem> SplitImageToLines(OcrSubtitleItem item)

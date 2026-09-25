@@ -1,4 +1,5 @@
 ﻿using Nikse.SubtitleEdit.UiLogic.AutoTranslate;
+using Nikse.SubtitleEdit.UiLogic.BatchConvert;
 
 namespace Nikse.SubtitleEdit.Logic.Config;
 
@@ -10,6 +11,9 @@ public class SeBatchConvert
 
     /// <summary>Give output files the source file's modified/created date instead of the conversion time.</summary>
     public bool KeepSourceTimestamp { get; set; }
+
+    /// <summary>Keep the computer from going to sleep on idle while a batch runs (#15222).</summary>
+    public bool PreventSleep { get; set; }
     public string TargetFormat { get; set; }
     public string CustomTextFormatName { get; set; } = string.Empty;
     public string TargetEncoding { get; set; }
@@ -152,6 +156,35 @@ public class SeBatchConvert
     public bool ImageAdjustColorOn { get; set; }
     public string ImageAdjustColorValue { get; set; } = "#FFFFFFFF";
 
+    // Transport Stream output settings (SE4's "TS settings..."), see TransportStreamExportSettings.
+    public bool TsOverrideXPosition { get; set; }
+    public string TsOverrideHAlign { get; set; } = TransportStreamExportSettings.HAlignCenter;
+    public int TsOverrideHMargin { get; set; } = 5; // percent
+    public bool TsOverrideYPosition { get; set; }
+    public int TsOverrideBottomMargin { get; set; } = 5; // percent
+    public bool TsOverrideScreenSize { get; set; }
+    public int TsScreenWidth { get; set; } = 1920;
+    public int TsScreenHeight { get; set; } = 1080;
+    public string TsFileNameAppend { get; set; } = "." + TransportStreamExportSettings.PlaceholderTwoLetter;
+    public bool TsOnlyTeletext { get; set; }
+
+    public TransportStreamExportSettings GetTransportStreamExportSettings()
+    {
+        return new TransportStreamExportSettings
+        {
+            OverrideXPosition = TsOverrideXPosition,
+            HAlign = TsOverrideHAlign ?? TransportStreamExportSettings.HAlignCenter,
+            HMarginPercent = TsOverrideHMargin,
+            OverrideYPosition = TsOverrideYPosition,
+            BottomMarginPercent = TsOverrideBottomMargin,
+            OverrideScreenSize = TsOverrideScreenSize,
+            ScreenWidth = TsScreenWidth,
+            ScreenHeight = TsScreenHeight,
+            FileNameAppend = TsFileNameAppend ?? string.Empty,
+            OnlyTeletext = TsOnlyTeletext,
+        };
+    }
+
     public SeBatchConvert()
     {
         OutputFolder = string.Empty;
@@ -171,6 +204,7 @@ public class SeBatchConvert
         NOcrBinaryOcrFallbackDatabase = string.Empty;
         BinaryOcrNOcrFallbackDatabase = string.Empty;
         VobSubIsolateColors = true;
+        PreventSleep = true;
         OffsetTimeCodesForward = true;
         AdjustVia = "Seconds";
         AdjustDurationSeconds = 0.1;

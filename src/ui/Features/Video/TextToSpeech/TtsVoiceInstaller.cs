@@ -1,4 +1,4 @@
-using Avalonia.Controls;
+﻿using Avalonia.Controls;
 using Nikse.SubtitleEdit.Core.Common;
 using Nikse.SubtitleEdit.Features.Shared;
 using Nikse.SubtitleEdit.Features.Video.SpeechToText;
@@ -67,6 +67,16 @@ public static class TtsVoiceInstaller
     /// backends), so the dialogs read with the right engine name and don't mention
     /// Chatterbox.
     /// </summary>
+    /// <summary>
+    /// Ensures the CrispASR runtime is installed for "Remove original speech" - its source
+    /// separation task is part of every CrispASR build SE has ever pinned.
+    /// </summary>
+    public static Task<bool> EnsureCrispAsrForSpeechRemoval(Window? window, IWindowService windowService, string featureName)
+        => EnsureCrispAsrAsync(window, windowService, forceRedownload: false,
+            engineDisplayName: featureName,
+            extraCapabilityCheck: null,
+            minVersionNote: null);
+
     public static Task<bool> EnsureCrispAsrForQwen3(Window? window, IWindowService windowService, bool forceRedownload)
         => EnsureCrispAsrAsync(window, windowService, forceRedownload,
             engineDisplayName: "Qwen3 TTS (CrispASR)",
@@ -105,6 +115,18 @@ public static class TtsVoiceInstaller
             engineDisplayName: "Pocket TTS (CrispASR)",
             extraCapabilityCheck: null,
             minVersionNote: "v0.8.31 or newer");
+
+    /// <summary>
+    /// Ensures the CrispASR runtime that Supertonic (CrispASR) runs on is installed.
+    /// The supertonic backend ships in CrispASR v0.8.33 and newer; the version note names that
+    /// floor because older builds have no supertonic backend at all and abort on the unknown
+    /// --backend value.
+    /// </summary>
+    public static Task<bool> EnsureCrispAsrForSupertonic(Window? window, IWindowService windowService, bool forceRedownload)
+        => EnsureCrispAsrAsync(window, windowService, forceRedownload,
+            engineDisplayName: "Supertonic (CrispASR)",
+            extraCapabilityCheck: null,
+            minVersionNote: "v0.8.33 or newer");
 
     /// <summary>
     /// Ensures the CrispASR runtime that Zonos TTS (CrispASR) runs on is installed.
@@ -166,7 +188,7 @@ public static class TtsVoiceInstaller
 
     /// <summary>
     /// Ensures the CrispASR runtime that MOSS-TTS (CrispASR) runs on is installed.
-    /// The moss-tts backend ships in CrispASR v0.8.13 and newer (SE pins v0.8.30).
+    /// The moss-tts backend ships in CrispASR v0.8.13 and newer (SE pins v0.8.36).
     /// </summary>
     public static Task<bool> EnsureCrispAsrForMossTts(Window? window, IWindowService windowService, bool forceRedownload)
         => EnsureCrispAsrAsync(window, windowService, forceRedownload,
@@ -176,7 +198,7 @@ public static class TtsVoiceInstaller
 
     /// <summary>
     /// Ensures the CrispASR runtime that dots.tts (CrispASR) runs on is installed.
-    /// The dots-tts backend ships in CrispASR v0.8.25 and newer (SE pins v0.8.30); the version
+    /// The dots-tts backend ships in CrispASR v0.8.25 and newer (SE pins v0.8.36); the version
     /// note names that floor because older builds have no dots-tts backend at all and abort on
     /// the unknown --backend value.
     /// </summary>
@@ -214,7 +236,12 @@ public static class TtsVoiceInstaller
     /// on Apple Silicon, and CPU / Vulkan / CUDA on Windows and Linux x64.
     /// </summary>
     /// <param name="engineDisplayName">The engine that asked, for the prompts ("IndexTTS 2.5").</param>
-    public static async Task<bool> EnsureAudioCppRuntime(Window? window, IWindowService windowService, bool forceRedownload, string engineDisplayName)
+    /// <param name="requiredFamily">
+    /// The audio.cpp model family that engine needs (its <c>FamilyName</c>). An installed runtime
+    /// that predates the family is not "installed" for this engine: the user is asked to update
+    /// it, since the old binary would only fail later with "unsupported model family hint".
+    /// </param>
+    public static async Task<bool> EnsureAudioCppRuntime(Window? window, IWindowService windowService, bool forceRedownload, string engineDisplayName, string requiredFamily)
     {
         if (window == null)
         {
@@ -222,9 +249,29 @@ public static class TtsVoiceInstaller
         }
 
         var isInstalled = File.Exists(AudioCppRuntime.GetServerExecutable());
-        if (!forceRedownload && isInstalled)
+        var isCapable = isInstalled && AudioCppRuntime.SupportsFamily(requiredFamily);
+        if (!forceRedownload && isCapable)
         {
             return true;
+        }
+
+        // Installed but built before this engine's family existed: confirm the update and keep
+        // the backend the user picked the first time — no reason to ask CPU/Vulkan/CUDA again.
+        var isUpdateRequired = isInstalled && !isCapable && !forceRedownload;
+        var savedBackend = Se.Settings.Video.TextToSpeech.IndexTts25AudioCppBackend;
+        if (isUpdateRequired)
+        {
+            var updateAnswer = await MessageBox.Show(
+                window,
+                "audio.cpp update required",
+                $"{Environment.NewLine}\"{engineDisplayName}\" needs a newer audio.cpp runtime than the one installed. Re-download it now?",
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Question);
+
+            if (updateAnswer != MessageBoxResult.Yes)
+            {
+                return false;
+            }
         }
 
         string backend;
@@ -241,7 +288,7 @@ public static class TtsVoiceInstaller
                 return false;
             }
 
-            var answer = await MessageBox.Show(
+            var answer = isUpdateRequired ? MessageBoxResult.Yes : await MessageBox.Show(
                 window,
                 "Download audio.cpp?",
                 $"{Environment.NewLine}\"{engineDisplayName}\" runs through the audio.cpp runtime. Download and install now?",
@@ -268,7 +315,9 @@ public static class TtsVoiceInstaller
                 return false;
             }
 
-            var variantAnswer = await MessageBox.Show(
+            var variantAnswer = isUpdateRequired && !string.IsNullOrEmpty(savedBackend)
+                ? MessageBoxResult.None
+                : await MessageBox.Show(
                 window,
                 "Download audio.cpp?",
                 $"{Environment.NewLine}\"{engineDisplayName}\" runs through the audio.cpp runtime. Select a build to download:",
@@ -278,17 +327,23 @@ public static class TtsVoiceInstaller
                 "Vulkan",
                 "CUDA");
 
-            if (variantAnswer == MessageBoxResult.None || variantAnswer == MessageBoxResult.Cancel)
+            if (isUpdateRequired && !string.IsNullOrEmpty(savedBackend))
+            {
+                backend = savedBackend;
+            }
+            else if (variantAnswer == MessageBoxResult.None || variantAnswer == MessageBoxResult.Cancel)
             {
                 return false;
             }
-
-            backend = variantAnswer switch
+            else
             {
-                MessageBoxResult.Custom2 => IndexTts25AudioCppDownloadService.BackendVulkan,
-                MessageBoxResult.Custom3 => IndexTts25AudioCppDownloadService.BackendCuda,
-                _ => IndexTts25AudioCppDownloadService.BackendCpu,
-            };
+                backend = variantAnswer switch
+                {
+                    MessageBoxResult.Custom2 => IndexTts25AudioCppDownloadService.BackendVulkan,
+                    MessageBoxResult.Custom3 => IndexTts25AudioCppDownloadService.BackendCuda,
+                    _ => IndexTts25AudioCppDownloadService.BackendCpu,
+                };
+            }
 
             // The GPU builds import their runtime at load time, so a missing driver is not a
             // slow fallback — the process dies in the loader before printing anything.
@@ -311,6 +366,15 @@ public static class TtsVoiceInstaller
         {
             return false;
         }
+
+        // The four audio.cpp engines share this binary. A server started from the old build
+        // must go before the archive is extracted: on Windows the running exe cannot be
+        // overwritten at all, and elsewhere the stale process would keep answering requests
+        // (and reject any model family the new build added) until Subtitle Edit restarts.
+        IndexTts25AudioCpp.StopServer();
+        HiggsTtsAudioCpp.StopServer();
+        FishTtsAudioCpp.StopServer();
+        FireRedTts3AudioCpp.StopServer();
 
         var dlResult = await windowService.ShowDialogAsync<DownloadTtsWindow, DownloadTtsViewModel>(
             window, vm => vm.StartDownloadIndexTts25AudioCppEngine(backend));

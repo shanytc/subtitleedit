@@ -402,6 +402,9 @@ jobs:
           # Native PDBs (libSkiaSharp.pdb, libHarfBuzzSharp.pdb, ...) come from the SkiaSharp
           # runtime NuGet packages and aren't suppressed by -p:DebugType=none.
           Get-ChildItem -Path "./publish/windows-x64" -Filter "*.pdb" -Recurse -File | Remove-Item -Force
+          # libse.xml is libse's API documentation (GenerateDocumentationFile, for the NuGet package);
+          # the app never reads it, and users updating by hand wondered if it held settings.
+          Remove-Item -Path "./publish/windows-x64/libse.xml" -Force -ErrorAction SilentlyContinue
 
       - name: Publish Windows ARM64 app
         run: |
@@ -417,6 +420,7 @@ jobs:
           # The zip also carries libmpv's vulkan-1.dll dependency (+ its license) - copy everything (#13856).
           Copy-Item "libmpv-arm64-temp/*" "./publish/windows-arm64/"
           Get-ChildItem -Path "./publish/windows-arm64" -Filter "*.pdb" -Recurse -File | Remove-Item -Force
+          Remove-Item -Path "./publish/windows-arm64/libse.xml" -Force -ErrorAction SilentlyContinue
 
       # - name: Setup WiX
       #   run: |
@@ -532,6 +536,8 @@ jobs:
             arch_label: ARM64
             runtime: osx-arm64
             ffmpeg_url: https://www.osxexperts.net/ffmpeg81arm.zip
+            voikko_url: https://github.com/SubtitleEdit/support-files/releases/download/voikko-4.3-fi-2024-06/libvoikko-4.3.3-macos-arm64.zip
+            voikko_sha256: 21a131d6a972890384c7900f2aace608a6c8baa14da8c63863ee7433def9bb2b
             ffmpeg_sha256: ebb82529562b71170807bbc6b0e7eb4f0b13af8cbb0e085bb9e8f6fe709598ad
             dmg_format: UDBZ
             expected_arch: arm64
@@ -539,6 +545,8 @@ jobs:
             arch_label: x64
             runtime: osx-x64
             ffmpeg_url: https://www.osxexperts.net/ffmpeg80intel.zip
+            voikko_url: https://github.com/SubtitleEdit/support-files/releases/download/voikko-4.3-fi-2024-06/libvoikko-4.3.3-macos-x64.zip
+            voikko_sha256: fbd458122536708192a4f56f98f34d28a399547e628ce17d14d4cc6534b7a62b
             ffmpeg_sha256: 2d24d22db78c87f394a5822867acd5c5dc5e762cd261a44bd26923f3a5af3e07
             dmg_format: UDZO
             expected_arch: x86_64
@@ -628,6 +636,29 @@ jobs:
           }
           echo "Extracted $(ls libmpv-temp | wc -l) dylibs ($(du -sh libmpv-temp | cut -f1))"
 
+      # libvoikko for Finnish spell check: self-contained build of libvoikko 4.3.3 (no HFST,
+      # links only libc++/libSystem, install name @rpath/libvoikko.1.dylib) plus the voikko-fi
+      # "format 5" dictionary. The dylib joins the Frameworks payload (signed with the rest),
+      # the dictionary goes to Contents/Resources/voikko where VoikkoSpellChecker probes.
+      - name: Download + verify libvoikko + voikko-fi dictionary (${{ matrix.arch }})
+        run: |
+          set -e
+          curl -fL -o libvoikko.zip "${{ matrix.voikko_url }}"
+          echo "${{ matrix.voikko_sha256 }}  libvoikko.zip" | shasum -a 256 -c -
+          unzip -o libvoikko.zip -d libmpv-temp
+          rm libvoikko.zip
+          archs=$(lipo -archs libmpv-temp/libvoikko.1.dylib)
+          if [ "$archs" != "${{ matrix.expected_arch }}" ]; then
+            echo "ERROR: libvoikko archs are '$archs', expected exactly '${{ matrix.expected_arch }}'"
+            exit 1
+          fi
+          curl -fL -o voikko-dict.zip "https://github.com/SubtitleEdit/support-files/releases/download/voikko-4.3-fi-2024-06/dict.zip"
+          echo "98f26bb67e08288910fbf1aa92521f28bee79538ba86aefa267713333e7fa537  voikko-dict.zip" | shasum -a 256 -c -
+          mkdir -p voikko-dict-temp
+          unzip -o voikko-dict.zip -d voikko-dict-temp
+          rm voikko-dict.zip
+          [ -f voikko-dict-temp/5/mor-standard/mor.vfst ] || { echo "ERROR: voikko dictionary layout changed"; exit 1; }
+
       - name: Setup code signing (if certificates available)
         run: |
           if [ -n "${{ secrets.MACOS_CERTIFICATE }}" ] && [ -n "${{ secrets.APPLE_ID_USER }}" ]; then
@@ -657,6 +688,7 @@ jobs:
             -p:InformationalVersion="$APP_VER_DISPLAY" \
             -o ./publish/macos-${{ matrix.arch }}
           find ./publish/macos-${{ matrix.arch }} -name "*.pdb" -delete
+          rm -f ./publish/macos-${{ matrix.arch }}/libse.xml
           # Arch sanity on the cross-published SE executable (lipo: exact match).
           file ./publish/macos-${{ matrix.arch }}/SubtitleEdit
           archs=$(lipo -archs ./publish/macos-${{ matrix.arch }}/SubtitleEdit)
@@ -697,6 +729,10 @@ jobs:
           cp "./libmpv-temp/"*.dylib "$app/Contents/Frameworks/"
           chmod -R 755 "$app/Contents/Frameworks/"
           rm -rf "./libmpv-temp"
+
+          mkdir -p "$app/Contents/Resources/voikko"
+          cp -R "./voikko-dict-temp/5" "$app/Contents/Resources/voikko/"
+          rm -rf "./voikko-dict-temp"
 
           # Point the SE executable at the bundled Frameworks for @rpath resolution.
           # The dylibs themselves already use @rpath/* internally (IINA's CI fixed
@@ -839,6 +875,7 @@ jobs:
 
           # Native PDBs from the SkiaSharp runtime NuGet aren't suppressed by -p:DebugType=none.
           find ./publish/linux-x64 -name "*.pdb" -delete
+          rm -f ./publish/linux-x64/libse.xml
 
       - name: Publish Linux ARM64 app
         run: |
@@ -852,6 +889,7 @@ jobs:
             -o ./publish/linux-arm64
 
           find ./publish/linux-arm64 -name "*.pdb" -delete
+          rm -f ./publish/linux-arm64/libse.xml
 
       - name: Create Linux TAR packages
         run: |

@@ -18,6 +18,7 @@ public class SeFile
     public SeCompare Compare { get; set; } = new();
     public int ExportDvbTeletextPageNumber { get; set; } = 888;
     public string ExportDvbTeletextLanguageCode { get; set; } = "eng";
+    public bool ExportDvbTeletextHearingImpaired { get; set; }
 
     public SeFile()
     {
@@ -43,7 +44,7 @@ public class SeFile
         });
     }
 
-    public void AddToRecentFiles(string subtitleFileName, string subtitleFileNameOriginal, string videoFileName, int selectedLine, string encoding, long VideoOffsetInMs, bool videoIsSmpte, int audioTrack)
+    public void AddToRecentFiles(string subtitleFileName, string subtitleFileNameOriginal, string videoFileName, int selectedLine, string encoding, long VideoOffsetInMs, bool videoIsSmpte, int audioTrack, string subtitleFileNameSecondary = "")
     {
         var existing = RecentFiles.FirstOrDefault(rf =>
             rf.SubtitleFileName == subtitleFileName && rf.SubtitleFileNameOriginal == subtitleFileNameOriginal);
@@ -68,6 +69,7 @@ public class SeFile
         {
             SubtitleFileName = subtitleFileName,
             SubtitleFileNameOriginal = subtitleFileNameOriginal,
+            SubtitleFileNameSecondary = subtitleFileNameSecondary,
             VideoFileName = videoFileName,
             SelectedLine = selectedLine,
             Encoding = encoding,

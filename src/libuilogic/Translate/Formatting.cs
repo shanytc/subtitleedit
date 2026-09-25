@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Nikse.SubtitleEdit.UiLogic.Translate
 {
@@ -33,6 +34,9 @@ namespace Nikse.SubtitleEdit.UiLogic.Translate
             "eu", "eus_Latn"
         };
 
+        // Contains() on the 44-entry list ran per translated line.
+        private static readonly HashSet<string> LanguagesAllowingLineMergingSet = new HashSet<string>(LanguagesAllowingLineMerging, StringComparer.Ordinal);
+
         private bool Italic { get; set; }
         private string Font { get; set; } = string.Empty;
         private bool ItalicTwoLines { get; set; }
@@ -49,10 +53,24 @@ namespace Nikse.SubtitleEdit.UiLogic.Translate
         private bool HasReset { get; set; }
         private string? ReplaceAllText { get; set; }
 
+        private static readonly Regex OverrideBlock = new Regex(@"\{\\[^}]*\}", RegexOptions.Compiled);
+        private static readonly Regex DrawingMode = new Regex(@"\{[^}]*\\p[1-9]", RegexOptions.Compiled);
+
+        // Override tags that apply to the whole line wherever they stand (ASS spec): alignment,
+        // position/movement, rotation origin, fade, clip and wrap style. Anchored to the full tag
+        // so "\alpha", "\fn..." or "\fscx" never match.
+        private static readonly Regex LineGlobalTag = new Regex(
+            @"^(an\d|a\d+|q\d|pos\([^)]*\)|move\([^)]*\)|org\([^)]*\)|fade?\([^)]*\)|i?clip\([^)]*\))\s*$",
+            RegexOptions.Compiled);
+
         public string SetTagsAndReturnTrimmed(string input, string sourceLanguage)
         {
-            if (string.IsNullOrWhiteSpace(HtmlUtil.RemoveHtmlTags(input, true).Replace("♪", string.Empty).Replace("♫", string.Empty)))
+            if (string.IsNullOrWhiteSpace(HtmlUtil.RemoveHtmlTags(input, true).Replace("♪", string.Empty).Replace("♫", string.Empty)) ||
+                DrawingMode.IsMatch(input))
             {
+                // Nothing to translate - or an ASSA vector drawing ("{\p1}m 0 0 l 100 0 ..."), whose
+                // "text" is shape commands the engine would translate or mangle (#14424). The line
+                // is kept verbatim.
                 ReplaceAllText = input;
                 return "...";
             }
@@ -87,6 +105,8 @@ namespace Nikse.SubtitleEdit.UiLogic.Translate
                 EndTags = text.Substring(startIndex) + EndTags;
                 text = text.Remove(startIndex).Trim();
             }
+
+            text = MoveLineGlobalBlocksToStart(text);
 
             // ASSA reset tag
             if (text.Contains("\\r}", StringComparison.Ordinal) ||
@@ -157,7 +177,7 @@ namespace Nikse.SubtitleEdit.UiLogic.Translate
             }
 
             // Un-break line
-            if (LanguagesAllowingLineMerging.Contains(sourceLanguage))
+            if (sourceLanguage != null && LanguagesAllowingLineMergingSet.Contains(sourceLanguage))
             {
                 var lines = HtmlUtil.RemoveHtmlTags(text).SplitToLines();
                 if (lines.Count == 2 && !string.IsNullOrEmpty(lines[0]) && !string.IsNullOrEmpty(lines[1]) &&
@@ -170,6 +190,57 @@ namespace Nikse.SubtitleEdit.UiLogic.Translate
             }
 
             return text.Trim();
+        }
+
+        /// <summary>
+        /// Takes override blocks in the middle of the text off the engine's input when every tag
+        /// in them applies to the whole line anyway ("Hello{\pos(10,20)} world"), and restores them
+        /// in front of the text - same rendering, and the engine never sees them (#14424).
+        /// A block with any position-dependent tag ("{\i1}", "{\c&amp;H0000FF&amp;}", "{\k20}", "{\t(...)}")
+        /// stays where it is: moving it would change what it styles.
+        /// </summary>
+        private string MoveLineGlobalBlocksToStart(string text)
+        {
+            if (text.IndexOf("{\\", StringComparison.Ordinal) < 0)
+            {
+                return text;
+            }
+
+            var moved = new StringBuilder();
+            var result = OverrideBlock.Replace(text, m =>
+            {
+                if (!IsLineGlobalBlock(m.Value))
+                {
+                    return m.Value;
+                }
+
+                moved.Append(m.Value);
+                return string.Empty;
+            });
+
+            if (moved.Length == 0)
+            {
+                return text;
+            }
+
+            StartTags += moved.ToString();
+            return result.Trim();
+        }
+
+        private static bool IsLineGlobalBlock(string block)
+        {
+            // block is "{\tag1\tag2...}"; a "\t(...)" transform holds nested backslashes, and its
+            // "t(" part never matches, so such a block is always left in place.
+            var tags = block.Substring(2, block.Length - 3).Split('\\');
+            foreach (var tag in tags)
+            {
+                if (!LineGlobalTag.IsMatch(tag))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         public string ReAddFormatting(string input)

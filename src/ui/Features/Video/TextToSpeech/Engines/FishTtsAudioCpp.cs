@@ -1,4 +1,4 @@
-using Nikse.SubtitleEdit.Features.Video.TextToSpeech.ModelLicense;
+﻿using Nikse.SubtitleEdit.Features.Video.TextToSpeech.ModelLicense;
 using Nikse.SubtitleEdit.Features.Video.TextToSpeech.Voices;
 using Nikse.SubtitleEdit.Logic.Config;
 using Nikse.SubtitleEdit.Logic.Download;
@@ -26,7 +26,8 @@ namespace Nikse.SubtitleEdit.Features.Video.TextToSpeech.Engines;
 /// output.
 ///
 /// Like the other audio.cpp engines, the server honours a per-request <c>voice_ref</c>, so
-/// switching voice does NOT restart the server — only a model or backend change does. The
+/// switching voice does NOT restart the server — only a model or backend change does — which
+/// is also what makes per-line cloning ("Clone from video") free here. The
 /// model auto-handles the language of the input text, so there is no language combo. A
 /// <c>.txt</c> sidecar next to the reference WAV (the transcript convention the other cloning
 /// engines share) is passed as <c>reference_text</c>, which improves clone fidelity but is
@@ -36,7 +37,7 @@ namespace Nikse.SubtitleEdit.Features.Video.TextToSpeech.Engines;
 /// the Fish Audio Research License (research and non-commercial), which has to be accepted by
 /// the user before the first download — see <see cref="IsLicenseAccepted"/>.
 /// </summary>
-public class FishTtsAudioCpp : ITtsEngine
+public class FishTtsAudioCpp : ITtsEngine, IPerLineCloneEngine
 {
     public string Name => "Fish Audio S2 Pro (audio.cpp)";
     public string Description => "Fish Audio S2 Pro voice cloning in 80+ languages, via audio.cpp";
@@ -46,7 +47,7 @@ public class FishTtsAudioCpp : ITtsEngine
     public bool HasModel => true;
     public bool HasKeyFile => false;
     public bool SupportsVoiceCloning => true;
-    public bool SupportsPerLineVoiceCloning => false;
+    public bool SupportsPerLineVoiceCloning => true;
 
     // Q8_0 is the default: same 44.1 kHz output as BF16 at 3.6 GB less on disk.
     public const string ModelKeyQ8_0 = "Q8_0 (~5.9 GB)";
@@ -125,6 +126,12 @@ public class FishTtsAudioCpp : ITtsEngine
     public static string GetModelFileName(string? modelKey) =>
         ResolveModelKey(modelKey) == ModelKeyBf16 ? ModelBf16FileName : ModelQ8_0FileName;
 
+    /// <summary>
+    /// What goes in <c>reference_text</c> when the reference clip's transcript is unknown: the
+    /// server refuses a missing or empty transcript, accepts this, and clones from it well.
+    /// </summary>
+    internal const string UnknownReferenceTextPlaceholder = " ";
+
     private static readonly HttpClient HttpClient = new()
     {
         Timeout = TimeSpan.FromMinutes(10),
@@ -137,6 +144,7 @@ public class FishTtsAudioCpp : ITtsEngine
     // Only the model and the backend are baked into the running server — voice is per request.
     private static string? _serverModelKey;
     private static string? _serverBackend;
+    private static string? _serverExeStamp;
     private static bool _processExitHooked;
     private static readonly StringBuilder _serverLog = new();
 
@@ -349,6 +357,31 @@ public class FishTtsAudioCpp : ITtsEngine
     public Task<Voice[]> RefreshVoices(string language, CancellationToken cancellationToken) =>
         GetVoices(language);
 
+    /// <summary>
+    /// <see cref="IPerLineCloneEngine"/>: the server takes <c>voice_ref</c> as a path per request,
+    /// so the voice simply points at the cut clip - nothing is staged into this engine's own
+    /// folders. audio.cpp resamples the reference itself, so the 24 kHz clip is used as cut.
+    /// A clip with no transcript beside it (no original-language subtitle loaded, so what the
+    /// video says is unknown) is still a usable reference: <see cref="Speak"/> sends the blank
+    /// placeholder transcript for it, which clones fine.
+    /// </summary>
+    public Voice? MakePerLineCloneVoice(string clipFileName, string voiceName) =>
+        new Voice(new IndexTtsVoice(voiceName, clipFileName));
+
+    /// <summary>The clip's own path, which is exactly what the voice carries.</summary>
+    public string? GetPerLineReferenceClip(Voice voice) =>
+        voice.EngineVoice is IndexTtsVoice indexVoice && !string.IsNullOrEmpty(indexVoice.FilePath)
+            ? indexVoice.FilePath
+            : null;
+
+    /// <summary>
+    /// <see cref="IPerLineCloneEngine"/>: nothing is ever staged (the voice points straight at
+    /// the clip), so there is nothing to clear between runs.
+    /// </summary>
+    public void ResetStagedPerLineReferences()
+    {
+    }
+
     public async Task<TtsResult> Speak(
         string text,
         string outputFolder,
@@ -386,19 +419,22 @@ public class FishTtsAudioCpp : ITtsEngine
         // honoured per request — no server restart when the user switches voice.
         var options = new Dictionary<string, object>();
 
-        // The transcript of the reference WAV, from the shared .txt sidecar convention.
-        // NOT optional, whatever upstream's docs say: audio.cpp v0.7.1 answers a voice_ref
-        // without reference_text with HTTP 500 "Fish Audio prepare with inline reference
-        // audio requires reference_text option" (verified against the real server), and an
-        // empty string is refused the same way. Fail here with an actionable message instead
-        // of surfacing the server's error.
+        // The transcript of the reference WAV, from the shared .txt sidecar convention. The
+        // option itself is NOT optional, whatever upstream's docs say: audio.cpp answers a
+        // voice_ref without reference_text, or with an empty string, with HTTP 500 "Fish Audio
+        // prepare with inline reference audio requires reference_text option" (verified
+        // against the real server). A single space passes that check and the clone comes out
+        // fine, so an unknown transcript - a per-line clip cut from the video with no
+        // original-language subtitle loaded - is sent as that placeholder. What must NEVER be
+        // sent in its place is the text being spoken: the transcript and the target text share
+        // one prompt, and when they are the same line the model concludes the clip already
+        // says it and replays the clip instead of speaking the line (#14480, Polish subtitles
+        // dubbed as the video's own language).
         var referenceText = ChatterboxTtsCpp.TryReadReferenceTranscript(indexVoice.FilePath);
         if (string.IsNullOrWhiteSpace(referenceText))
         {
-            throw new InvalidOperationException(
-                "Fish Audio S2 Pro requires the transcript of the reference recording. "
-                + $"Save the spoken text as \"{Path.ChangeExtension(indexVoice.FilePath, ".txt")}\", "
-                + "or re-import the voice and enter the transcript when asked.");
+            referenceText = UnknownReferenceTextPlaceholder;
+            Se.WriteToolsLog($"Fish Audio S2 Pro (audio.cpp): no transcript beside reference '{indexVoice.FilePath}', cloning with a blank reference_text");
         }
 
         options["reference_text"] = referenceText;
@@ -484,10 +520,12 @@ public class FishTtsAudioCpp : ITtsEngine
     private static async Task EnsureServerRunningAsync(string modelKey, CancellationToken ct)
     {
         var backend = AudioCppRuntime.GetBackend();
+        var exeStamp = AudioCppRuntime.GetServerExecutableStamp();
 
         if (_serverProcess is { HasExited: false } && _serverPort != 0
             && string.Equals(_serverModelKey, modelKey, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(_serverBackend, backend, StringComparison.OrdinalIgnoreCase))
+            && string.Equals(_serverBackend, backend, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(_serverExeStamp, exeStamp, StringComparison.Ordinal))
         {
             return;
         }
@@ -497,7 +535,8 @@ public class FishTtsAudioCpp : ITtsEngine
         {
             if (_serverProcess is { HasExited: false } && _serverPort != 0
                 && string.Equals(_serverModelKey, modelKey, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(_serverBackend, backend, StringComparison.OrdinalIgnoreCase))
+                && string.Equals(_serverBackend, backend, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(_serverExeStamp, exeStamp, StringComparison.Ordinal))
             {
                 return;
             }
@@ -568,6 +607,7 @@ public class FishTtsAudioCpp : ITtsEngine
             _serverPort = port;
             _serverModelKey = modelKey;
             _serverBackend = backend;
+            _serverExeStamp = AudioCppRuntime.GetServerExecutableStamp();
             HookProcessExitOnce();
 
             // The config uses lazy_load, so /health answers within a second or two — the 5.9 GB
@@ -588,6 +628,7 @@ public class FishTtsAudioCpp : ITtsEngine
                     _serverLaunchCommand = null;
                     _serverModelKey = null;
                     _serverBackend = null;
+                    _serverExeStamp = null;
                     throw new InvalidOperationException(
                         $"audiocpp_server exited during startup (code {exitCode}). "
                         + AudioCppRuntime.DescribeStartupExit(exitCode, backend)
@@ -620,6 +661,13 @@ public class FishTtsAudioCpp : ITtsEngine
     /// Writes the audio.cpp server config next to the binary. lazy_load keeps startup instant;
     /// the model is read on first use and then stays resident until the server is stopped.
     /// </summary>
+    /// <remarks>
+    /// The model entry names the GGUF file, not its folder. Given a folder, audio.cpp picks
+    /// model.gguf or the sole *.gguf and refuses a folder holding several - so a user who had
+    /// downloaded both quantizations could not start the server until one was moved out of
+    /// sight (#14480). The file path is unambiguous, and auxiliary paths still resolve against
+    /// its parent.
+    /// </remarks>
     private static string WriteServerConfig(int port, string backend, string modelKey)
     {
         var config = new Dictionary<string, object>
@@ -635,7 +683,7 @@ public class FishTtsAudioCpp : ITtsEngine
                 {
                     ["id"] = ServerModelId,
                     ["family"] = FamilyName,
-                    ["path"] = GetSetModelsFolder(),
+                    ["path"] = GetModelPath(modelKey),
                     ["task"] = "tts",
                     ["mode"] = "offline",
                 },
@@ -749,6 +797,7 @@ public class FishTtsAudioCpp : ITtsEngine
         _serverLaunchCommand = null;
         _serverModelKey = null;
         _serverBackend = null;
+        _serverExeStamp = null;
         if (p == null)
         {
             return;

@@ -9,6 +9,7 @@ public class SeAutoTranslate
     public string AutoTranslateLastName { get; set; } = string.Empty;
     public string AutoTranslateLastSource { get; set; } = string.Empty;
     public string AutoTranslateLastTarget { get; set; } = string.Empty;
+    public bool TranslateSelectedLinesInPlace { get; set; }
     public string ChatGptUrl { get; set; }
     public string ChatGptPrompt { get; set; }
     public string ChatGptApiKey { get; set; }
@@ -52,6 +53,12 @@ public class SeAutoTranslate
     public decimal RequestDelaySeconds { get; set; }
 
     /// <summary>
+    /// Keep lines wrapped in music symbols (e.g. "♪ lyrics ♪") in the source language instead of
+    /// sending them to the translator (#9969).
+    /// </summary>
+    public bool KeepMusicLinesUntranslated { get; set; }
+
+    /// <summary>
     /// Line-merge strategy per translation engine, keyed by engine name.
     /// A missing entry means <see cref="TranslateStrategy.Default"/>.
     /// </summary>
@@ -90,6 +97,10 @@ public class SeAutoTranslate
     public string AvalAiPrompt { get; set; }
     public string AvalAiApiKey { get; set; }
     public string AvalAiModel { get; set; }
+    public string ApiRouteUrl { get; set; }
+    public string ApiRoutePrompt { get; set; }
+    public string ApiRouteApiKey { get; set; }
+    public string ApiRouteModel { get; set; }
 
     public string PerplexityUrl { get; set; }
     public string PerplexityPrompt { get; set; }
@@ -127,6 +138,10 @@ public class SeAutoTranslate
         AvalAiModel = AvalAi.Models[0];
         AvalAiPrompt = "Translate from {0} to {1}, keep punctuation as input, do not censor the translation, give only the output without comments:";
         AvalAiUrl = AvalAi.DefaultUrl;
+        ApiRouteApiKey = string.Empty;
+        ApiRouteModel = ApiRouteTranslate.Models[0];
+        ApiRoutePrompt = "Translate from {0} to {1}, keep punctuation as input, do not censor the translation, give only the output without comments:";
+        ApiRouteUrl = ApiRouteTranslate.DefaultUrl;
         PerplexityApiKey = string.Empty;
         PerplexityModel = PerplexityTranslate.Models[0];
         PerplexityPrompt = "Translate from {0} to {1}, keep punctuation as input, do not censor the translation, give only the output without comments:";

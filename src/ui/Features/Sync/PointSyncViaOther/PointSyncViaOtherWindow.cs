@@ -137,6 +137,7 @@ public class PointSyncViaOtherWindow : Window
             CellTheme = UiUtil.TableViewNoPaddingCellTheme,
             HeaderTheme = UiUtil.TableViewColumnHeaderTheme,
             Width = new GridLength(90),
+            NameBinding = new Binding(nameof(SubtitleLineViewModel.PreviousGap)) { Converter = gapConverter, Mode = BindingMode.OneWay },
             CellTemplate = new FuncDataTemplate<SubtitleLineViewModel>((_, _) =>
             {
                 var border = new Border
@@ -196,6 +197,7 @@ public class PointSyncViaOtherWindow : Window
             Width = new GridLength(1, GridUnitType.Star),
         });
         dataGrid.Bind(TableView.SelectedItemProperty, new Binding(nameof(vm.SelectedSyncPoint)));
+        dataGrid.WithAccessibleName(Se.Language.Sync.SyncPoints);
         TableViewExtras.AttachListNavigation(dataGrid);
 
         var menuItemDelete = new MenuItem
@@ -317,11 +319,23 @@ public class PointSyncViaOtherWindow : Window
                 CellTheme = UiUtil.TableViewCellTheme,
                 HeaderTheme = UiUtil.TableViewColumnHeaderTheme,
                 CellTemplate = TableViewExtras.MakeTextCellTemplate(nameof(SubtitleLineViewModel.Text)),
+                NameBinding = new Binding(nameof(SubtitleLineViewModel.Text)),
                 Width = new GridLength(1, GridUnitType.Star),
             },
         });
         dataGrid.Bind(TableView.SelectedItemProperty, new Binding(nameof(vm.SelectedSubtitle)));
+        dataGrid.WithLabeledBy(labelFileName); // the file name above the list is its heading (#12087)
         TableViewExtras.AttachListNavigation(dataGrid);
+
+        // Bring the initially selected line (the main window's selection) into view.
+        dataGrid.Loaded += (_, _) =>
+        {
+            if (vm.SelectedSubtitle is { } selected)
+            {
+                dataGrid.ScrollIntoView(selected);
+                TableViewExtras.CenterRow(dataGrid, selected);
+            }
+        };
 
         grid.Add(panelHeader, 0);
         grid.Add(UiUtil.MakeBorderForControlNoPadding(dataGrid), 1);
@@ -412,10 +426,12 @@ public class PointSyncViaOtherWindow : Window
                 CellTheme = UiUtil.TableViewCellTheme,
                 HeaderTheme = UiUtil.TableViewColumnHeaderTheme,
                 CellTemplate = TableViewExtras.MakeTextCellTemplate(nameof(SubtitleLineViewModel.Text)),
+                NameBinding = new Binding(nameof(SubtitleLineViewModel.Text)),
                 Width = new GridLength(1, GridUnitType.Star),
             },
         });
         dataGridSubtitle.Bind(TableView.SelectedItemProperty, new Binding(nameof(vm.SelectedOtherSubtitle)));
+        dataGridSubtitle.WithLabeledBy(labelOtherFileName); // the file name above the list is its heading (#12087)
         TableViewExtras.AttachListNavigation(dataGridSubtitle);
 
         // Clicking a line in the left grid scrolls this grid to the matching time (#12529)

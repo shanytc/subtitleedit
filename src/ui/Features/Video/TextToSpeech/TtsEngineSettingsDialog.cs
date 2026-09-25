@@ -14,8 +14,10 @@ using Nikse.SubtitleEdit.Features.Video.TextToSpeech.KokoroTtsSettings;
 using Nikse.SubtitleEdit.Features.Video.TextToSpeech.MossTtsCrispAsrSettings;
 using Nikse.SubtitleEdit.Features.Video.TextToSpeech.OmniVoiceCrispAsrSettings;
 using Nikse.SubtitleEdit.Features.Video.TextToSpeech.OmniVoiceSettings;
+using Nikse.SubtitleEdit.Features.Video.TextToSpeech.OpenAiCompatibleSettings;
 using Nikse.SubtitleEdit.Features.Video.TextToSpeech.PiperSettings;
 using Nikse.SubtitleEdit.Features.Video.TextToSpeech.PocketTtsCrispAsrSettings;
+using Nikse.SubtitleEdit.Features.Video.TextToSpeech.SupertonicCrispAsrSettings;
 using Nikse.SubtitleEdit.Features.Video.TextToSpeech.Qwen3TtsCrispAsrSettings;
 using Nikse.SubtitleEdit.Features.Video.TextToSpeech.Qwen3TtsSettings;
 using Nikse.SubtitleEdit.Features.Video.TextToSpeech.VibeVoiceCrispAsrSettings;
@@ -34,7 +36,7 @@ public static class TtsEngineSettingsDialog
 {
     /// <summary>
     /// Whether this engine has a settings dialog worth showing a button for. Cloud engines
-    /// other than ElevenLabs have nothing to configure here.
+    /// other than ElevenLabs and OpenAI-compatible have nothing to configure here.
     /// </summary>
     public static bool HasSettings(ITtsEngine? engine) => engine is
         OmniVoiceTtsCpp or
@@ -44,11 +46,13 @@ public static class TtsEngineSettingsDialog
         IndexTts25AudioCpp or
         HiggsTtsAudioCpp or
         FishTtsAudioCpp or
+        FireRedTts3AudioCpp or
         IndexTtsCrispAsr or
         DotsTtsCrispAsr or
         Confucius4TtsCrispAsr or
         CosyVoice3CrispAsr or
         PocketTtsCrispAsr or
+        SupertonicCrispAsr or
         F5TtsCrispAsr or
         OmniVoiceCrispAsr or
         VoxCPM2CrispAsr or
@@ -56,6 +60,7 @@ public static class TtsEngineSettingsDialog
         KokoroTtsCpp or
         ChatterboxTtsCpp or
         Piper or
+        OpenAiCompatibleSpeech or
         ElevenLabs;
 
     public static async Task ShowAsync(ITtsEngine? engine, Window window, IWindowService windowService)
@@ -88,6 +93,10 @@ public static class TtsEngineSettingsDialog
         {
             await windowService.ShowDialogAsync<AudioCppTtsSettingsWindow, AudioCppTtsSettingsViewModel>(window, vm => vm.Initialize(AudioCppTtsSettingsAdapters.Fish));
         }
+        else if (engine is FireRedTts3AudioCpp)
+        {
+            await windowService.ShowDialogAsync<AudioCppTtsSettingsWindow, AudioCppTtsSettingsViewModel>(window, vm => vm.Initialize(AudioCppTtsSettingsAdapters.FireRedTts3));
+        }
         else if (engine is IndexTtsCrispAsr)
         {
             await windowService.ShowDialogAsync<IndexTtsCrispAsrSettingsWindow, IndexTtsCrispAsrSettingsViewModel>(window, vm => vm.Initialize());
@@ -107,6 +116,10 @@ public static class TtsEngineSettingsDialog
         else if (engine is PocketTtsCrispAsr)
         {
             await windowService.ShowDialogAsync<PocketTtsCrispAsrSettingsWindow, PocketTtsCrispAsrSettingsViewModel>(window, vm => vm.Initialize());
+        }
+        else if (engine is SupertonicCrispAsr)
+        {
+            await windowService.ShowDialogAsync<SupertonicCrispAsrSettingsWindow, SupertonicCrispAsrSettingsViewModel>(window, vm => vm.Initialize());
         }
         else if (engine is F5TtsCrispAsr)
         {
@@ -135,6 +148,10 @@ public static class TtsEngineSettingsDialog
         else if (engine is Piper)
         {
             await windowService.ShowDialogAsync<PiperSettingsWindow, PiperSettingsViewModel>(window, vm => vm.Initialize());
+        }
+        else if (engine is OpenAiCompatibleSpeech)
+        {
+            await windowService.ShowDialogAsync<OpenAiCompatibleSettingsWindow, OpenAiCompatibleSettingsViewModel>(window, vm => { });
         }
         else
         {

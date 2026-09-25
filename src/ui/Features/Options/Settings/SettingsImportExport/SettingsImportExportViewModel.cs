@@ -171,7 +171,7 @@ public partial class SettingsImportExportViewModel : ObservableObject
 
         try
         {
-            var json = File.ReadAllText(_importFilePath);
+            var json = await File.ReadAllTextAsync(_importFilePath);
 
             if (Se4SettingsXmlImporter.LooksLikeXml(json))
             {
@@ -319,6 +319,11 @@ public partial class SettingsImportExportViewModel : ObservableObject
             e.Handled = true;
             Window?.Close();
         }
+        else if (UiUtil.IsHelp(e))
+        {
+            e.Handled = true;
+            UiUtil.ShowHelp("features/settings");
+        }
     }
 
     private async Task ExportSettings()
@@ -363,18 +368,33 @@ public partial class SettingsImportExportViewModel : ObservableObject
         // those customizations was silently dropped on export/import (#14232).
         var exportShortcuts = ExportImportAll || ExportImportShortcuts;
         exportData.Shortcuts = exportShortcuts ? currentSettings.Shortcuts : null!;
+        // So the import side knows which shortcut migrations these bindings have been through.
+        exportData.ShortcutsMigrationVersion = exportShortcuts ? currentSettings.ShortcutsMigrationVersion : null;
         CopyShortcutSlots(exportShortcuts ? currentSettings : null, exportData);
         exportData.AutoTranslate = ExportImportAll || ExportImportAutoTranslate ? currentSettings.AutoTranslate : null!;
         exportData.SpellCheck = ExportImportAll ? currentSettings.SpellCheck : null!;
 
         // Video was never assigned, so an "all settings" file carried a default Video block
         // that the importer applied - silently resetting the player choice, the mpv preview
-        // style and the custom seek amounts.
-        exportData.Video = ExportImportAll ? currentSettings.Video : null!;
+        // style and the custom seek amounts. Exclude RecentFiles so local recent video paths are not exported.
+        if (ExportImportAll && currentSettings.Video != null)
+        {
+            var videoJson = JsonSerializer.Serialize(currentSettings.Video);
+            var videoExport = JsonSerializer.Deserialize<SeVideo>(videoJson);
+            if (videoExport != null)
+            {
+                videoExport.RecentFiles.Clear();
+                exportData.Video = videoExport;
+            }
+        }
+        else
+        {
+            exportData.Video = null!;
+        }
 
         var json = JsonSerializer.Serialize(exportData, new JsonSerializerOptions { WriteIndented = true });
         var jsonWithSource = InjectExportMarkers(json, GetCurrentOsName(), exportShortcuts);
-        File.WriteAllText(fileName, jsonWithSource);
+        await File.WriteAllTextAsync(fileName, jsonWithSource);
     }
 
     private void ImportSettings()
@@ -433,7 +453,9 @@ public partial class SettingsImportExportViewModel : ObservableObject
         {
             if (importData.Video != null)
             {
+                var existingRecentFiles = Se.Settings.Video.RecentFiles;
                 Se.Settings.Video = importData.Video;
+                Se.Settings.Video.RecentFiles = existingRecentFiles;
             }
 
             if (importData.Tools != null)
@@ -465,13 +487,7 @@ public partial class SettingsImportExportViewModel : ObservableObject
         {
             if (importData.Shortcuts != null)
             {
-                if (_importSourceOs != null &&
-                    !string.Equals(_importSourceOs, GetCurrentOsName(), StringComparison.Ordinal))
-                {
-                    NormalizeShortcutModifiersForCurrentOs(importData.Shortcuts);
-                }
-
-                Se.Settings.Shortcuts = importData.Shortcuts;
+                ApplyImportedShortcuts(Se.Settings, importData.Shortcuts, importData.ShortcutsMigrationVersion, _importSourceOs, GetCurrentOsName());
             }
 
             if (_importHasShortcutSlots)
@@ -539,8 +555,38 @@ public partial class SettingsImportExportViewModel : ObservableObject
         Se.SaveSettings();
     }
 
+    // Imported shortcuts replace the list the shortcut migrations have already run on, so the
+    // migrations are owed again - from the version the file was exported at (files from before
+    // that was written: from the start; every step only touches bindings still on an old
+    // default). Without this a file from before #14941 brought Cmd+H for Replace and the other
+    // old macOS defaults back for good. The macOS-only defaults also have to be translated when
+    // the file crosses to or from macOS, which renaming Ctrl <-> Cmd alone does not do.
+    internal static void ApplyImportedShortcuts(Se settings, List<SeShortCut> shortcuts, int? exportedMigrationVersion, string? sourceOs, string currentOs)
+    {
+        const string macOs = "MacOS";
+        var isMacOs = currentOs == macOs;
+        var version = exportedMigrationVersion.GetValueOrDefault();
+        if (sourceOs != null && !string.Equals(sourceOs, currentOs, StringComparison.Ordinal))
+        {
+            if (sourceOs == macOs)
+            {
+                Se.RevertMacOsDefaultShortcuts(shortcuts);
+            }
+            else if (isMacOs)
+            {
+                version = Math.Min(version, 2); // steps 3 and 4 are macOS only and never ran there
+            }
+
+            NormalizeShortcutModifiers(shortcuts, isMacOs);
+        }
+
+        settings.Shortcuts = shortcuts;
+        settings.ShortcutsMigrationVersion = version;
+        settings.MigrateShortcuts(isMacOs);
+    }
+
     // Default shortcuts use "Win" as the modifier on macOS (the Cmd/⌘ key) and
-    // "Ctrl" on Windows/Linux — see ShortcutsMain.GetCommandOrWin. Only called
+    // "Ctrl" on Windows/Linux — see ShortcutsMain.GetDefaultShortcuts. Only called
     // when the import file is known to have come from a different OS, so we
     // don't disturb user-customized modifiers (e.g. a real Ctrl shortcut on
     // macOS) during a same-OS round-trip.
@@ -552,7 +598,11 @@ public partial class SettingsImportExportViewModel : ObservableObject
     // every case.
     private static void NormalizeShortcutModifiersForCurrentOs(List<SeShortCut> shortcuts)
     {
-        var isMac = OperatingSystem.IsMacOS();
+        NormalizeShortcutModifiers(shortcuts, OperatingSystem.IsMacOS());
+    }
+
+    private static void NormalizeShortcutModifiers(List<SeShortCut> shortcuts, bool isMac)
+    {
         // From-set is matched as a group; we always emit the OS-default token.
         var fromTokens = isMac
             ? new[] { "Ctrl", "Control" }
@@ -627,17 +677,6 @@ public partial class SettingsImportExportViewModel : ObservableObject
                 to.SetCustomSearch(slot, from?.GetCustomSearchName(slot)!, from?.GetCustomSearchUrl(slot)!);
             }
         }
-
-        to.Actor1 = from?.Actor1!;
-        to.Actor2 = from?.Actor2!;
-        to.Actor3 = from?.Actor3!;
-        to.Actor4 = from?.Actor4!;
-        to.Actor5 = from?.Actor5!;
-        to.Actor6 = from?.Actor6!;
-        to.Actor7 = from?.Actor7!;
-        to.Actor8 = from?.Actor8!;
-        to.Actor9 = from?.Actor9!;
-        to.Actor10 = from?.Actor10!;
     }
 
     // Adds the top-level marker properties to the serialized JSON without touching the Se

@@ -3,6 +3,7 @@ using Avalonia.Input;
 using Nikse.SubtitleEdit.Logic;
 using Avalonia.Interactivity;
 using Avalonia.Media;
+using Avalonia.Media.Immutable;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -61,7 +62,7 @@ public partial class CompareViewModel : ObservableObject
     private static IBrush ListViewRed => CompareColors.OnlyInOneFileRow;
     private static IBrush ListViewGreen => CompareColors.TextOrTimeDifferenceRow;
     private static IBrush ListViewOrange => CompareColors.NumberDifferenceRow;
-    private static readonly IBrush TransparentBrush = new SolidColorBrush(Colors.Transparent);
+    private static readonly IBrush TransparentBrush = new ImmutableSolidColorBrush(Colors.Transparent);
 
     public CompareViewModel(IFileHelper fileHelper, IFolderHelper folderHelper)
     {
@@ -324,13 +325,36 @@ public partial class CompareViewModel : ObservableObject
         // remove items not in differences
         if (onlyShowTextDiff || onlyShowDiff)
         {
-            for (var idx = LeftSubtitles.Count - 1; idx >= 0; idx--)
+            var differenceSet = new HashSet<int>(differences);
+            var leftCount = LeftSubtitles.Count;
+            var leftSurvivors = new List<CompareItem>(differenceSet.Count);
+            var rightSurvivors = new List<CompareItem>(differenceSet.Count);
+            for (var idx = 0; idx < leftCount; idx++)
             {
-                if (!differences.Contains(idx))
+                if (differenceSet.Contains(idx))
                 {
-                    LeftSubtitles.RemoveAt(idx);
-                    RightSubtitles.RemoveAt(idx);
+                    leftSurvivors.Add(LeftSubtitles[idx]);
+                    rightSurvivors.Add(RightSubtitles[idx]);
                 }
+            }
+
+            // Rows beyond the left count were never removed by the old per-row loop.
+            for (var idx = leftCount; idx < RightSubtitles.Count; idx++)
+            {
+                rightSurvivors.Add(RightSubtitles[idx]);
+            }
+
+            // Rebuild both collections in one pass instead of one RemoveAt notification per row.
+            LeftSubtitles.Clear();
+            RightSubtitles.Clear();
+            foreach (var item in leftSurvivors)
+            {
+                LeftSubtitles.Add(item);
+            }
+
+            foreach (var item in rightSurvivors)
+            {
+                RightSubtitles.Add(item);
             }
         }
 
@@ -806,17 +830,18 @@ public partial class CompareViewModel : ObservableObject
         {
             var itemLeft = LeftSubtitles[i];
             var itemRight = RightSubtitles[i];
+            var (leftTextHtml, rightTextHtml) = GetHtmlTextPair(itemLeft, itemRight);
 
             sb.AppendLine("    <tr>");
             sb.AppendLine("      <td" + GetHtmlBackgroundColor(itemLeft.NumberBackgroundBrush) + ">" + GetHtmlText(itemLeft, itemLeft.Number.ToString()) + "</td>");
             sb.AppendLine("      <td" + GetHtmlBackgroundColor(itemLeft.StartTimeBackgroundBrush) + ">" + GetHtmlText(itemLeft, new TimeCode(itemLeft.StartTime).ToDisplayString()) + "</td>");
             sb.AppendLine("      <td" + GetHtmlBackgroundColor(itemLeft.EndTimeBackgroundBrush) + ">" + GetHtmlText(itemLeft, new TimeCode(itemLeft.EndTime).ToDisplayString()) + "</td>");
-            sb.AppendLine("      <td" + GetHtmlBackgroundColor(itemLeft.TextBackgroundBrush) + ">" + GetHtmlText(itemLeft, itemLeft.Text) + "</td>");
+            sb.AppendLine("      <td" + GetHtmlBackgroundColor(itemLeft.TextBackgroundBrush) + ">" + leftTextHtml + "</td>");
             sb.AppendLine("      <td>&nbsp;</td>");
             sb.AppendLine("      <td" + GetHtmlBackgroundColor(itemRight.NumberBackgroundBrush) + ">" + GetHtmlText(itemRight, itemRight.Number.ToString()) + "</td>");
             sb.AppendLine("      <td" + GetHtmlBackgroundColor(itemRight.StartTimeBackgroundBrush) + ">" + GetHtmlText(itemRight, new TimeCode(itemRight.StartTime).ToDisplayString()) + "</td>");
             sb.AppendLine("      <td" + GetHtmlBackgroundColor(itemRight.EndTimeBackgroundBrush) + ">" + GetHtmlText(itemRight, new TimeCode(itemRight.EndTime).ToDisplayString()) + "</td>");
-            sb.AppendLine("      <td" + GetHtmlBackgroundColor(itemRight.TextBackgroundBrush) + ">" + GetHtmlText(itemRight, itemRight.Text) + "</td>");
+            sb.AppendLine("      <td" + GetHtmlBackgroundColor(itemRight.TextBackgroundBrush) + ">" + rightTextHtml + "</td>");
             sb.AppendLine("    </tr>");
         }
         sb.AppendLine("    <tr>");
@@ -825,7 +850,7 @@ public partial class CompareViewModel : ObservableObject
         sb.AppendLine("    </table>");
         sb.AppendLine("  </body>");
         sb.AppendLine("</html>");
-        System.IO.File.WriteAllText(fileName, sb.ToString());
+        await System.IO.File.WriteAllTextAsync(fileName, sb.ToString());
         await _folderHelper.OpenFolderWithFileSelected(Window!, fileName);
     }
 
@@ -893,6 +918,21 @@ public partial class CompareViewModel : ObservableObject
     partial void OnRightFileNameChanged(string value)
     {
         OnPropertyChanged(nameof(RightFileNameDisplay));
+    }
+
+    /// <summary>
+    /// The text cells of an exported row carry the same word-level marking the window shows:
+    /// the differing runs in red, the rest of a differing line on pale green. A pair the options
+    /// count as equal is exported plain, exactly as the window leaves it unmarked.
+    /// </summary>
+    private (string left, string right) GetHtmlTextPair(CompareItem left, CompareItem right)
+    {
+        if (left.IsDefault || right.IsDefault || AreTextsEqual(left, right))
+        {
+            return (GetHtmlText(left, left.Text), GetHtmlText(right, right.Text));
+        }
+
+        return TextDiffHighlighter.CompareToHtml(left.Text, right.Text, IgnoreWhiteSpace, IgnoreFormatting);
     }
 
     private static string GetHtmlText(CompareItem p, string text)
@@ -988,13 +1028,19 @@ public partial class CompareViewModel : ObservableObject
                 {
                     target.SelectedIndex = idx;
                 }
-
-                ScrollSync?.SyncFrom(source);
             }
             finally
             {
                 _mirroringSelection = false;
             }
+
+            // Setting SelectedIndex makes the target grid *post* its own ScrollIntoView
+            // (SelectingItemsControl.AutoScrollToSelectedItemIfNecessary), and that scroll is
+            // computed from the panel's estimated row height, so a sync done here would be
+            // undone a frame later - the two sides ended one row apart on CI whenever the
+            // estimate put the selected row on the viewport's bottom edge. Queue the sync
+            // behind that scroll instead: same priority, so it runs after it.
+            Dispatcher.UIThread.Post(() => ScrollSync?.SyncFrom(source));
         });
     }
 

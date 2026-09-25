@@ -3,6 +3,7 @@ using Nikse.SubtitleEdit.Logic.Config;
 using Nikse.SubtitleEdit.Logic.Download;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -31,6 +32,7 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
     private volatile bool _renderContextNeedsGraphicsContext;
     private volatile bool _disposePendingRenderContextFree;
     private volatile bool _disposed;
+    private int _calledAfterDisposeLogged; // 1 once EnsureNotDisposed has reported this player
     private volatile bool _coreInitialized;
     private string _fileName = string.Empty;
     private double? _audioEndBound;
@@ -74,6 +76,7 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
     // has already been and gone.
     private long _scrubFollowUpSeekId;     // keyframe seek owing an exact landing, 0 if none
     private long _scrubFollowUpTargetBits; // that seek's target, as double bits
+    private bool _lastSeekIssuedInFlight;  // the newest seek was issued while a seek was in flight (under _seekStateLock)
 
     // Guards every publish and claim of the seek generation + follow-up debt (IssueSeek, the
     // follow-up/settle/cancel paths). The id, target and debt slot are three separate fields, so
@@ -177,6 +180,30 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
         public int format;
         public IntPtr data;
     }
+
+    /// <summary>Matches <c>mpv_event_log_message</c> in client.h.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MpvEventLogMessage
+    {
+        public IntPtr prefix;
+        public IntPtr level;
+        public IntPtr text;
+        public int logLevel;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int MpvRequestLogMessages(IntPtr mpvHandle, byte[] minLevel);
+
+    private MpvRequestLogMessages? _mpvRequestLogMessages;
+
+    // mpv warnings/errors forwarded to SE's error log by the event thread (see RunEventLoop),
+    // capped per core so a repeating condition cannot flood the log.
+    private const int MaxForwardedMpvLogMessages = 50;
+    private int _forwardedMpvLogMessages;
+
+    /// <summary>Test hooks: how many mpv warnings/errors reached the error log, and the last one.</summary>
+    internal int ForwardedMpvLogMessageCount => _forwardedMpvLogMessages;
+    internal string? LastForwardedMpvLogMessage { get; private set; }
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int MpvSetOption(IntPtr mpvHandle, byte[] name, int format, ref ulong data);
@@ -296,6 +323,7 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
     private const int MPV_FORMAT_DOUBLE = 5;
 
     private const int MPV_EVENT_SHUTDOWN = 1;
+    private const int MPV_EVENT_LOG_MESSAGE = 2;
     private const int MPV_EVENT_COMMAND_REPLY = 5;
     private const int MPV_EVENT_PLAYBACK_RESTART = 21;
     private const int MPV_EVENT_PROPERTY_CHANGE = 22;
@@ -399,6 +427,7 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
         _mpvWaitEvent = (MpvWaitEvent?)GetDllType(typeof(MpvWaitEvent), "mpv_wait_event");
         _mpvObserveProperty = (MpvObserveProperty?)GetDllType(typeof(MpvObserveProperty), "mpv_observe_property");
         _mpvWakeup = (MpvWakeup?)GetDllType(typeof(MpvWakeup), "mpv_wakeup");
+        _mpvRequestLogMessages = (MpvRequestLogMessages?)GetDllType(typeof(MpvRequestLogMessages), "mpv_request_log_messages");
         _mpvCommand = (MpvCommand?)GetDllType(typeof(MpvCommand), "mpv_command");
         _mpvCommandAsync = (MpvCommandAsync?)GetDllType(typeof(MpvCommandAsync), "mpv_command_async");
         _mpvSetOption = (MpvSetOption?)GetDllType(typeof(MpvSetOption), "mpv_set_option");
@@ -481,6 +510,7 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
 
         SetYtDlpPathOption();
         SetPreInitAudioOptions();
+        SetClipboardBackendsOption();
 
         var err = _mpvInitialize(_mpv);
         if (err >= 0)
@@ -602,6 +632,19 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
             }
         }
 
+        // mpv's warnings name the playback problems SE can otherwise only guess at from the
+        // outside - "Audio device underrun detected." is the one behind a frozen cursor and
+        // time display (#14523). Forwarded to the error log from the event thread; failing to
+        // enable them costs nothing but that diagnostic.
+        try
+        {
+            _mpvRequestLogMessages?.Invoke(handle, GetUtf8Bytes("warn"));
+        }
+        catch
+        {
+            // diagnostics only
+        }
+
         _eventLoopStop = false;
         _eventLoopHandle = handle;
         _eventThread = new Thread(() => RunEventLoop(handle))
@@ -657,6 +700,10 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
                 // A restart is "a seek finished", which is the only honest moment to ask whether
                 // a scrub burst has stopped and a deferred exact landing is now due.
                 IssueScrubFollowUpSeekIfSettled();
+            }
+            else if (mpvEvent.eventId == MPV_EVENT_LOG_MESSAGE && mpvEvent.data != IntPtr.Zero)
+            {
+                ForwardMpvLogMessage(mpvEvent.data);
             }
             else if (mpvEvent.eventId == MPV_EVENT_COMMAND_REPLY && mpvEvent.replyUserdata >= SeekReplyIdBase)
             {
@@ -772,6 +819,66 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
     public bool SupportsPlaybackRestartEvents => _eventLoopActive;
 
     /// <summary>
+    /// Writes one mpv warning/error line to SE's error log, so a playback problem inside the
+    /// core (an audio device underrun, a failing output, a decoder complaint) shows up next to
+    /// the symptom a user reports instead of being lost. Capped per core.
+    /// </summary>
+    private void ForwardMpvLogMessage(IntPtr data)
+    {
+        if (_forwardedMpvLogMessages >= MaxForwardedMpvLogMessages)
+        {
+            return;
+        }
+
+        try
+        {
+            var message = Marshal.PtrToStructure<MpvEventLogMessage>(data);
+            var text = message.text == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(message.text)?.Trim();
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            var prefix = message.prefix == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(message.prefix);
+            var level = message.level == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(message.level);
+            if (IsExpectedMpvLogMessage(level, prefix, text))
+            {
+                return;
+            }
+
+            _forwardedMpvLogMessages++;
+            var suffix = _forwardedMpvLogMessages == MaxForwardedMpvLogMessages
+                ? " (further mpv messages from this player are not logged)"
+                : string.Empty;
+            var line = $"mpv [{level}] {prefix}: {text}{suffix}";
+            LastForwardedMpvLogMessage = line;
+            Se.LogError(line);
+        }
+        catch
+        {
+            // diagnostics only - never let logging disturb the event loop
+        }
+    }
+
+    /// <summary>
+    /// mpv warnings that say nothing about a playback problem, so they must not produce an error
+    /// log on a session where nothing went wrong (#14904): the notice mpv prints whenever
+    /// "audio-stream-silence" is on - an option SE sets on purpose - and ffmpeg's demuxer
+    /// grumbling about a file's metadata ("UDTA parsing failed retrying raw"). Errors are always
+    /// kept. Pure so the rule can be tested.
+    /// </summary>
+    internal static bool IsExpectedMpvLogMessage(string? level, string? prefix, string text)
+    {
+        if (!string.Equals(level, "warn", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return text.Contains("--audio-stream-silence", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(prefix, "ffmpeg/demuxer", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// Whether mpv has reported MPV_EVENT_PLAYBACK_RESTART - "seek finished, output resumed
     /// from the new position" (it also fires when a file starts) - since the given
     /// Stopwatch timestamp. This is the exact signal for "the seek has landed" that the
@@ -817,6 +924,18 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
     }
 
     /// <summary>
+    /// Number of seek commands sent to mpv so far, deferred exact landings included. Test
+    /// visibility for the two-tier scrub seeking: a settled burst must add exactly one.
+    /// </summary>
+    internal long IssuedSeekCount => Interlocked.Read(ref _lastSeekCommandId);
+
+    /// <summary>
+    /// Whether a keyframe seek still owes its exact landing. Test visibility: must be false once
+    /// a burst has settled, or the video is stranded on a keyframe.
+    /// </summary>
+    internal bool OwesExactLanding => Interlocked.Read(ref _scrubFollowUpSeekId) != 0;
+
+    /// <summary>
     /// Pays the exact landing a mid-burst keyframe seek deferred, once that seek has landed and
     /// nothing newer has replaced it. Runs on the event thread, from the restart event that says
     /// the seek finished.
@@ -843,18 +962,13 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
 
             var target = BitConverter.Int64BitsToDouble(Interlocked.Read(ref _scrubFollowUpTargetBits));
 
-            // The observed position, never the Position getter: that one answers with the pinned
-            // target while paused, so every deferred landing would look already reached.
-            double? reported = _observedTimePosValid
-                ? BitConverter.Int64BitsToDouble(Interlocked.Read(ref _observedTimePosBits))
-                : null;
-
+            // Never gated on mpv's reported position: during a seek mpv reports the target as
+            // time-pos, and the observed cache is what this thread refreshed last, so a "close
+            // enough" check here compared the target with itself and skipped the landing (#14441).
             if (!ScrubSeekPolicy.ShouldIssueFollowUp(
                     followUpId,
                     Interlocked.Read(ref _lastSeekCommandId),
-                    Interlocked.Read(ref _restartAckedSeekCommandId),
-                    target,
-                    reported))
+                    Interlocked.Read(ref _restartAckedSeekCommandId)))
             {
                 return;
             }
@@ -1104,12 +1218,15 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
 
     /// <summary>
     /// Shrinks mpv's audio output buffer (its default is 0.2 s). That buffer is why pause,
-    /// resume and seeks during playback take effect ~200 ms late: a pause only goes quiet once
-    /// the buffered audio has played out, and resume/seek only sound once it has been refilled.
-    /// Those latencies are the residuals the waveform playhead estimate exists to mask
-    /// (#12740, discussion #10824), so keep the buffer short. A zero or negative setting
-    /// leaves mpv's default alone - the escape hatch for machines where a small buffer
-    /// causes audio dropouts (slow hardware, Bluetooth audio).
+    /// resume and seeks during playback take effect ~200 ms late. SE shipped 0.05 s on that
+    /// reasoning (5.2.0 beta 20 - rc2), but pause and resume are hardware pause/unpause on the
+    /// device (mpv's ao_set_paused: WASAPI IAudioClient::Stop/Start, CoreAudio likewise) and
+    /// never wait for the buffer, while a buffer that small underruns on any audio-thread
+    /// hiccup: mpv then stops the output, waits until the buffer is full again and restarts
+    /// it, and its clock stands still in between - the waveform cursor and time display froze
+    /// for up to a second or two, worst right after pause/resume (#14523). mpv's manual marks
+    /// the option "for testing only". A zero or negative setting (the default) leaves mpv's
+    /// default alone; the setting stays as a knob for experiments.
     /// <para>Must be called before mpv_initialize.</para>
     /// </summary>
     private void SetAudioBufferOption()
@@ -1135,6 +1252,39 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
     {
         SetAudioBufferOption();
         SetAudioStreamSilenceOption();
+    }
+
+    /// <summary>
+    /// Turns off mpv's clipboard backends. Subtitle Edit never reads or writes mpv's "clipboard"
+    /// property, so the backend is dead weight - but it is not free: mpv starts its clipboard
+    /// thread unconditionally at init (reinit_clipboard runs from the option-change callback, even
+    /// with clipboard-monitor=no), and in mpv 0.40.0 that thread can wedge at 100% CPU forever.
+    /// <para>
+    /// The Wayland backend allocates a pipe for every new selection offer but only hands the write
+    /// end to the compositor when the offer advertises "text/plain;charset=utf-8"; the local write
+    /// end is closed either way, so an offer without that mime leaves a read end with no writer in
+    /// the poll set. 0.40.0's dispatch loop only ever tests POLLIN on it, so the permanent POLLHUP
+    /// is never acted on, the offer is never destroyed and ppoll returns instantly on every
+    /// iteration. An X11/XWayland client owning the clipboard arms it - an XWayland-bridged
+    /// selection does not present that mime - and Subtitle Edit is itself an XWayland client, so
+    /// any clipboard activity in the session can trigger it against the libmpv in our own process
+    /// (issue #14929). mpv 0.41.0 added the missing POLLERR/POLLHUP/POLLNVAL branch.
+    /// </para>
+    /// <para>
+    /// Our Flatpak already builds mpv 0.41.0, but Linux can load a system libmpv too and plenty of
+    /// distributions still ship 0.40.x, so drop the whole failure class rather than rely on the
+    /// version. MPV_ERROR_OPTION_NOT_FOUND is expected on libmpv older than 0.40 - the option did
+    /// not exist before the clipboard backends did - and is not worth a log line.
+    /// </para>
+    /// <para>Must be called before mpv_initialize: the clipboard backend is picked there.</para>
+    /// </summary>
+    private void SetClipboardBackendsOption()
+    {
+        var err = SetOptionString("clipboard-backends", string.Empty);
+        if (err < 0 && err != MpvErrorOptionNotFound)
+        {
+            Se.LogError(new InvalidOperationException(GetErrorString(err)), "LibMpvDynamicPlayer could not clear clipboard-backends");
+        }
     }
 
     /// <summary>
@@ -1303,6 +1453,7 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
 
         SetYtDlpPathOption();
         SetPreInitAudioOptions();
+        SetClipboardBackendsOption();
 
         // Initialize mpv first
         var err = _mpvInitialize(_mpv);
@@ -1408,6 +1559,7 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
 
         SetYtDlpPathOption();
         SetPreInitAudioOptions();
+        SetClipboardBackendsOption();
 
         var err = _mpvInitialize(_mpv);
         if (err < 0)
@@ -1679,11 +1831,20 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
         }
     }
 
+    /// <summary>
+    /// Reports a call that arrives after <see cref="Dispose"/> - once per player. Such a caller
+    /// is almost always a timer that outlived its window and polls at 6-60 Hz, and one entry
+    /// per poll took the error log to 100 MB. The exception is never thrown and so carries no
+    /// stack trace; the caller's is logged instead, since it is the only way to tell which
+    /// timer it was.
+    /// </summary>
     private void EnsureNotDisposed()
     {
-        if (_disposed)
+        if (_disposed && Interlocked.Exchange(ref _calledAfterDisposeLogged, 1) == 0)
         {
-            Se.LogError(new ObjectDisposedException(nameof(LibMpvDynamicPlayer)), "LibMpvDynamicPlayer method called after disposal");
+            Se.LogError(new ObjectDisposedException(nameof(LibMpvDynamicPlayer)),
+                "LibMpvDynamicPlayer method called after disposal (further calls on this player are not logged)" +
+                Environment.NewLine + new StackTrace(1, true));
         }
     }
 
@@ -1793,7 +1954,11 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
         // without ever undoing a sub-add that got in first.
         SetOptionString("sid", "no");
 
-        var err = await Task.Run(() => DoMpvCommand("loadfile", path));
+        // Long local paths get the "\\?\" prefix on Windows: mpv opens the file with the path
+        // as given, and a plain path past MAX_PATH fails silently - no error, duration 0:00,
+        // Play does nothing (#14407). _fileName keeps the path the caller knows.
+        var loadPath = NativeMediaPath.ForMpv(path);
+        var err = await Task.Run(() => DoMpvCommand("loadfile", loadPath));
         if (_disposed)
         {
             return;
@@ -1866,7 +2031,7 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
         // buttons in the text-to-speech windows, which load a file and expect to hear it.
         // Those windows build their own core via Initialize(), which - unlike the three
         // rendering Initialize* methods - deliberately leaves mpv's pause default alone.
-        var err = await Task.Run(() => DoMpvCommand("loadfile", path));
+        var err = await Task.Run(() => DoMpvCommand("loadfile", NativeMediaPath.ForMpv(path)));
         if (_disposed)
         {
             return;
@@ -1874,7 +2039,7 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
 
         if (err < 0)
         {
-            Se.LogError(new InvalidOperationException(GetErrorString(err)), "LibMpvDynamicPlayer LoadFile");
+            Se.LogError(new InvalidOperationException(GetErrorString(err)), "LibMpvDynamicPlayer LoadAudio");
         }
 
         SetOptionString("keep-open", "always");
@@ -2117,7 +2282,12 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
                 return _audioEndBound.Value;
             }
 
-            if (_pausedValue.HasValue && IsPaused && !Se.Settings.General.UseFrameMode)
+            // In frame mode too: this used to fall through to mpv's decoded frame time, so a
+            // waveform click while paused landed the cursor on the click, then ~50 ms later on the
+            // first frame at or after it - a visible one-frame hop forward on every click, in a
+            // mode SE forces on for EBU STL (#14441). The seek target is where the user pointed;
+            // the frame steps that need the real frame position clear the cache themselves.
+            if (_pausedValue.HasValue && IsPaused)
             {
                 return _pausedValue.Value;
             }
@@ -2209,12 +2379,15 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
             _pausedValue = value;
             _lastRawTimePos = value; // keep the eof-reached gate accurate across seeks
 
-            // A seek arriving while an earlier one is still in flight is a burst - a waveform
+            // Seeks arriving while earlier ones are still in flight are a burst - a waveform
             // drag, a slider drag, a wheel spin, one seek per input event - and all but its last
             // seek are about to be superseded. Those are served fast, at keyframes, and the exact
             // landing is deferred to when the burst settles (ScrubSeekPolicy). An isolated seek,
-            // the common case, is exact right away as before.
-            var inBurst = !forceExact && IsSeekInFlight();
+            // the common case, is exact right away as before - and so is the second seek of a
+            // pair, which is what a waveform click issues (ScrubSeekPolicy.JoinsBurst).
+            var seekInFlight = !forceExact && IsSeekInFlight();
+            var inBurst = ScrubSeekPolicy.JoinsBurst(seekInFlight, _lastSeekIssuedInFlight);
+            _lastSeekIssuedInFlight = seekInFlight;
             var seekFlags = ScrubSeekPolicy.FlagsFor(inBurst);
 
             // Fire-and-forget: seeks arrive in storms (scrubbing, slider drags, wheel steps -
@@ -2725,6 +2898,7 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
 
         SetYtDlpPathOption();
         SetPreInitAudioOptions();
+        SetClipboardBackendsOption();
 
         // Initialize mpv
         var err = _mpvInitialize(_mpv);
@@ -2912,6 +3086,7 @@ public sealed class LibMpvDynamicPlayer : IDisposable, IVideoPlayer
     }
 
     private const int MpvErrorUninitialized = -3; // MPV_ERROR_UNINITIALIZED in mpv's client.h
+    private const int MpvErrorOptionNotFound = -5; // MPV_ERROR_OPTION_NOT_FOUND in mpv's client.h
 
     public string VersionNumber
     {

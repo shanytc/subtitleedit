@@ -1151,7 +1151,9 @@ namespace Nikse.SubtitleEdit.Core.Common
 
                 //FALCONE:<i> I didn't think</i><br /><i>it was going to be you,</i>
                 var colIdx = text.IndexOf(':');
-                if (colIdx >= 0 && Utilities.CountTagInText(text, beginTag) + Utilities.CountTagInText(text, endTag) == 4 && text.Length > colIdx + 1 && !char.IsDigit(text[colIdx + 1]))
+                // index is -1 for a text broken with a bare "\n" on Windows (GetNumberOfLines counts
+                // '\n'), and Substring(0, -1) threw - same guard as the sibling branches.
+                if (index > 0 && colIdx >= 0 && Utilities.CountTagInText(text, beginTag) + Utilities.CountTagInText(text, endTag) == 4 && text.Length > colIdx + 1 && !char.IsDigit(text[colIdx + 1]))
                 {
                     var firstLine = text.Substring(0, index);
                     var secondLine = text.Substring(index).TrimStart();
@@ -1563,11 +1565,11 @@ namespace Nikse.SubtitleEdit.Core.Common
         }
 
 #if NET7_0_OR_GREATER
-        [GeneratedRegex("[ ]*(COLOR|color|Color)=[\"']*[#\\dA-Za-z]*[\"']*[ ]*")]
+        [GeneratedRegex("[ ]*(COLOR|color|Color)=[\"']*[#\\dA-Za-z]*(?:\\([^()<>\"']*\\))?[\"']*[ ]*")]
         private static partial Regex ColorAttributeRegexGen();
         private static readonly Regex ColorAttributeRegex = ColorAttributeRegexGen();
 #else
-        private static readonly Regex ColorAttributeRegex = new Regex("[ ]*(COLOR|color|Color)=[\"']*[#\\dA-Za-z]*[\"']*[ ]*", RegexOptions.Compiled);
+        private static readonly Regex ColorAttributeRegex = new Regex("[ ]*(COLOR|color|Color)=[\"']*[#\\dA-Za-z]*(?:\\([^()<>\"']*\\))?[\"']*[ ]*", RegexOptions.Compiled);
 #endif
 
         /// <summary>

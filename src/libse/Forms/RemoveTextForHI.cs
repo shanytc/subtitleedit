@@ -107,49 +107,67 @@ namespace Nikse.SubtitleEdit.Core.Forms
             }
 
             var newText = input;
-            const string endChars = ".?!";
             for (var i = 6; i < newText.Length; i++)
             {
-                var s = newText.Substring(i);
-                if (s.Length > 2 && endChars.Contains(s[0]))
+                // The tail past i used to be materialized with newText.Substring(i) on every
+                // character, and then sliced again two or three times - quadratic in time and
+                // allocation for every line this runs on. Everything below the sentence-ending
+                // character is index arithmetic now; the tail is only built once a candidate
+                // prefix has actually matched.
+                var ch = newText[i];
+                if (newText.Length - i <= 2 || (ch != '.' && ch != '?' && ch != '!'))
                 {
-                    var pre = string.Empty;
+                    continue;
+                }
 
-                    s = s.Remove(0, 1);
-                    if (s.StartsWith(' '))
-                    {
-                        pre = s.StartsWith(" <i>", StringComparison.Ordinal) ? " <i>" : " ";
-                    }
-                    else if (s.StartsWith("<i>", StringComparison.Ordinal))
-                    {
-                        pre = "<i>";
-                    }
-                    else if (s.StartsWith("</i>", StringComparison.Ordinal))
-                    {
-                        pre = "</i>";
-                    }
+                // "s" in the old code started here (the sentence-ending character removed).
+                var tail = i + 1;
+                var pre = string.Empty;
+                if (newText[tail] == ' ')
+                {
+                    pre = StartsWithAt(newText, tail, " <i>") ? " <i>" : " ";
+                }
+                else if (StartsWithAt(newText, tail, "<i>"))
+                {
+                    pre = "<i>";
+                }
+                else if (StartsWithAt(newText, tail, "</i>"))
+                {
+                    pre = "</i>";
+                }
 
-                    if (pre.Length > 0)
-                    {
-                        s = s.Remove(0, pre.Length);
-                        if (s.Length > 1 && s[0] == ' ')
-                        {
-                            pre += " ";
-                            s = s.Remove(0, 1);
-                        }
+                if (pre.Length == 0)
+                {
+                    continue;
+                }
 
-                        if (HasHearImpairedTagsAtStartOrEnd(s))
-                        {
-                            s = RemoveStartEndTags(s);
-                            newText = newText.Substring(0, i + 1) + pre + " " + s;
-                            newText = newText.Replace("<i></i>", string.Empty);
-                            newText = newText.Replace("<i> </i>", " ").FixExtraSpaces();
-                        }
-                    }
+                var rest = tail + pre.Length;
+                if (newText.Length - rest > 1 && newText[rest] == ' ')
+                {
+                    pre += " ";
+                    rest++;
+                }
+
+                var s = newText.Substring(rest);
+                if (HasHearImpairedTagsAtStartOrEnd(s))
+                {
+                    s = RemoveStartEndTags(s);
+                    newText = newText.Substring(0, i + 1) + pre + " " + s;
+                    newText = newText.Replace("<i></i>", string.Empty);
+                    newText = newText.Replace("<i> </i>", " ").FixExtraSpaces();
                 }
             }
 
             return newText;
+        }
+
+        /// <summary>
+        /// Ordinal <c>text.Substring(index).StartsWith(value)</c> without the substring.
+        /// </summary>
+        private static bool StartsWithAt(string text, int index, string value)
+        {
+            return text.Length - index >= value.Length &&
+                   string.CompareOrdinal(text, index, value, 0, value.Length) == 0;
         }
 
         private static readonly string[] ExpectedStrings = { ". ", "! ", "? " };
@@ -1304,7 +1322,12 @@ namespace Nikse.SubtitleEdit.Core.Forms
                 text = "<i>" + text.Remove(0, removeText.Length).TrimStart(' ');
             }
 
-            if (input != text)
+            // Collapsing double spaces and trimming above is a side effect of rebuilding the text,
+            // not an HI fix. A file that centers its lines with leading spaces came out of the
+            // rebuild "changed" on every line, which woke the dash fixer below and stripped or
+            // added dialog dashes with no option selected (#15157).
+            var whiteSpaceOnlyChange = IsWhiteSpaceOnlyChange(originalAfterU2010Replace, text);
+            if (input != text && !whiteSpaceOnlyChange)
             {
                 // insert spaces before "-"
                 text = text.Replace(Environment.NewLine + "- <i>", Environment.NewLine + "<i>- ");
@@ -1341,8 +1364,8 @@ namespace Nikse.SubtitleEdit.Core.Forms
                 }
             }
 
-            // keep U2010 dashes if no changes
-            if (originalAfterU2010Replace == text)
+            // keep U2010 dashes (and the original white space) if no changes
+            if (originalAfterU2010Replace == text || whiteSpaceOnlyChange)
             {
                 return inputWithoutUnicodeReplace;
             }
@@ -1353,6 +1376,41 @@ namespace Nikse.SubtitleEdit.Core.Forms
             }
 
             return text.Trim();
+        }
+
+        /// <summary>
+        /// True when the two texts differ only in white space: padding, double spaces, trailing
+        /// blanks or line break style.
+        /// </summary>
+        internal static bool IsWhiteSpaceOnlyChange(string before, string after)
+        {
+            var i = 0;
+            var j = 0;
+            while (true)
+            {
+                while (i < before.Length && char.IsWhiteSpace(before[i]))
+                {
+                    i++;
+                }
+
+                while (j < after.Length && char.IsWhiteSpace(after[j]))
+                {
+                    j++;
+                }
+
+                if (i >= before.Length || j >= after.Length)
+                {
+                    return i >= before.Length && j >= after.Length;
+                }
+
+                if (before[i] != after[j])
+                {
+                    return false;
+                }
+
+                i++;
+                j++;
+            }
         }
 
         private static string RemoveEmptyFontTag(string text)

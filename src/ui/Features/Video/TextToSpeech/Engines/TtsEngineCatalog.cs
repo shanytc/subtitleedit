@@ -33,9 +33,20 @@ public static class TtsEngineCatalog
         engines.Add(new ElevenLabs(ttsDownloadService));
         engines.Add(new AzureSpeech(ttsDownloadService));
         engines.Add(new MistralSpeech(ttsDownloadService));
+        engines.Add(new OpenAiCompatibleSpeech(ttsDownloadService));
         engines.Add(new Murf(ttsDownloadService));
         engines.Add(new GoogleSpeech(ttsDownloadService));
         engines.Add(new KokoroTtsCpp());
+
+        // Supertonic-3 (CrispASR) — ten fixed preset voices and no cloning, so it sits with the
+        // fixed-voice engines rather than in the CrispASR cloning group below. 31 languages from
+        // one 200 MB GGUF, and by far the fastest local engine here (RTF ~0.09 on an M4).
+        engines.Add(new SupertonicCrispAsr());
+
+        // Zonos (CrispASR) — not a cloning engine: the zonos backend has no speaker encoder, so
+        // it speaks with one fixed default voice (CrispASR v0.8.34 dropped its voice-cloning
+        // cap). Move it back into CreateVoiceCloningEngines when upstream ports the encoder.
+        engines.Add(new ZonosTtsCrispAsr());
 
         engines.AddRange(CreateVoiceCloningEngines());
 
@@ -105,6 +116,12 @@ public static class TtsEngineCatalog
             // under the Fish Audio Research License (first-run accept window).
             new FishTtsAudioCpp(),
 
+            // FireRedTTS3-Base (audio.cpp) — cloning across 24 languages with the best published
+            // speaker similarity of the open models (arXiv 2608.17492). Same shared runtime;
+            // weights are Apache-2.0, so no licence gate. Needs an explicit language pick
+            // (no detection; audio.cpp defaults to Chinese).
+            new FireRedTts3AudioCpp(),
+
             // F5-TTS (CrispASR) hidden: CrispASR 0.6.12 has no GPU backend for f5-tts, so
             // synthesis runs the fixed 32-step Euler ODE through a 22-layer DiT + Vocos on
             // CPU only. That's 3-8 minutes per short utterance on Mac CPU — unusable for the
@@ -120,8 +137,6 @@ public static class TtsEngineCatalog
             // MOSS-TTS (CrispASR) — Qwen3-8B backbone + 1.6B transformer codec at 24 kHz with
             // zero-shot voice cloning, via the moss-tts backend (#12617).
             new MossTtsCrispAsr(),
-
-            new ZonosTtsCrispAsr(),
 
             // OmniVoice (CrispASR) — the same model family as the standalone OmniVoice TTS
             // above, but on the shared CrispASR runtime and as a persistent server, so the

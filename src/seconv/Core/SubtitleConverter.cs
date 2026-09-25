@@ -43,6 +43,46 @@ internal class SubtitleConverter
             $"Full frame image is not supported by '{options.Format}' and was ignored - it applies to fcpimage and bluraysup.");
     }
 
+    /// <summary>
+    /// The 3D options can reach a target that has no use for them the same way: D-Cinema has no
+    /// packed frame to draw a 3D image into (it only takes the depth, as the Z-position), and
+    /// everywhere else a depth without a 3D mode moves nothing.
+    /// </summary>
+    private static void WarnIf3DIgnored(ConversionOptions options, ConversionResult result)
+    {
+        var style = options.ImageStyle;
+        if (style.Mode3D == Export3DMode.None && style.Depth3D == 0 && style.Plane3D == null)
+        {
+            return;
+        }
+
+        var handler = ImageOutputWriter.TryCreateHandler(LibSEIntegration.NormalizeFormatName(options.Format));
+        if (handler is null)
+        {
+            return;
+        }
+
+        if (!Stereo3DImage.IsModeSupported(handler.ExportImageType))
+        {
+            if (style.Mode3D != Export3DMode.None)
+            {
+                result.Warnings.Add(
+                    $"3D mode is not supported by '{options.Format}' and was ignored - D-Cinema writes the 3D depth as the Z-position instead.");
+            }
+
+            if (style.Plane3D != null)
+            {
+                result.Warnings.Add($"3D-Plane is not supported by '{options.Format}' and was ignored.");
+            }
+        }
+        else if (style.Mode3D == Export3DMode.None)
+        {
+            result.Warnings.Add(style.Plane3D != null
+                ? "3D-Plane has no effect without a 3D mode (--mode-3d) and was ignored."
+                : "3D depth has no effect without a 3D mode (--mode-3d) and was ignored.");
+        }
+    }
+
     public async Task<ConversionResult> ConvertAsync(ConversionOptions options)
     {
         var result = new ConversionResult();
@@ -56,6 +96,7 @@ internal class SubtitleConverter
             }
 
             WarnIfFullFrameIgnored(options, result);
+            WarnIf3DIgnored(options, result);
 
             // Get input files
             var inputFiles = GetInputFiles(options);
@@ -113,7 +154,7 @@ internal class SubtitleConverter
                     // --translate-to rewrites the content's language, so the output name
                     // carries the target code ("way.zh-CN.srt") instead of the source
                     // track's - and a plain file no longer collides with its own input.
-                    var translateToSuffix = _translateRunner?.TargetLanguageCode;
+                    var translateToSuffix = LanguageToken(options, _translateRunner?.TargetLanguageCode);
 
                     var tracks = ContainerSubtitleLoader.TryLoadTracks(inputFile, options);
                     if (tracks is null)
@@ -154,7 +195,7 @@ internal class SubtitleConverter
 
                         foreach (var track in tracks)
                         {
-                            var outputFile = ResolveOutputFileName(inputFile, options, AppendForcedToken(translateToSuffix ?? track.LanguageCode, track.IsForced), track.TrackNumber, _usedOutputFileNames);
+                            var outputFile = ResolveOutputFileName(inputFile, options, AppendForcedToken(translateToSuffix ?? LanguageToken(options, track.LanguageCode), track.IsForced), track.TrackNumber, _usedOutputFileNames);
                             var trackLabel = track.TrackNumber.HasValue ? $"#{track.TrackNumber.Value} " : string.Empty;
                             var langLabel = string.IsNullOrEmpty(track.LanguageCode) ? string.Empty : $"[{track.LanguageCode}] ";
                             if (!options.Quiet)
@@ -477,12 +518,13 @@ internal class SubtitleConverter
             return false;
         }
 
-        // Both bitmap track kinds are eligible for image-to-image: PGS, and VobSub (whose
+        // Every bitmap track kind is eligible for image-to-image: PGS, VobSub (whose
         // subpictures previously fell through to the OCR pipeline and were re-rasterised as
-        // text at the default font — issue #12772 part 3).
+        // text at the default font — issue #12772 part 3) and DVB-sub, which did the same.
         var bitmapTracks = matroska.GetTracks(true)
             .Where(t => t.CodecId.Equals("S_HDMV/PGS", StringComparison.OrdinalIgnoreCase)
-                        || t.CodecId.Equals("S_VOBSUB", StringComparison.OrdinalIgnoreCase))
+                        || t.CodecId.Equals("S_VOBSUB", StringComparison.OrdinalIgnoreCase)
+                        || t.CodecId.Equals("S_DVBSUB", StringComparison.OrdinalIgnoreCase))
             .Where(t => !options.ForcedOnly || t.IsForced)
             .Where(t => options.TrackNumbers.Count == 0 || options.TrackNumbers.Contains(t.TrackNumber))
             .ToList();
@@ -503,21 +545,22 @@ internal class SubtitleConverter
         foreach (var track in bitmapTracks)
         {
             var isVobSub = track.CodecId.Equals("S_VOBSUB", StringComparison.OrdinalIgnoreCase);
+            var isDvbSub = track.CodecId.Equals("S_DVBSUB", StringComparison.OrdinalIgnoreCase);
             var outputFile = ResolveOutputFileName(
-                inputFile, options, AppendForcedToken(ContainerSubtitleLoader.SanitizeLang(track.Language), track.IsForced), track.TrackNumber, _usedOutputFileNames);
+                inputFile, options, AppendForcedToken(LanguageToken(options, ContainerSubtitleLoader.SanitizeLang(track.Language)), track.IsForced), track.TrackNumber, _usedOutputFileNames);
 
             if (!options.Quiet)
             {
                 var trackLabel = $"#{track.TrackNumber} ";
-                var kind = isVobSub ? "VobSub" : "PGS";
+                var kind = isVobSub ? "VobSub" : isDvbSub ? "DVB" : "PGS";
                 AnsiConsole.MarkupInterpolated($"[dim]{fileIndex}:[/] [cyan]{Path.GetFileName(inputFile)}[/] [yellow]{trackLabel}[/][dim]({kind} img→img)→[/] [green]{outputFile}[/]...");
             }
 
             IReadOnlyList<BitmapSubtitleLoader.BitmapSubtitleItem>? items = null;
             try
             {
-                items = isVobSub
-                    ? BitmapSubtitleLoader.LoadMatroskaVobSub(matroska, track)
+                items = isVobSub ? BitmapSubtitleLoader.LoadMatroskaVobSub(matroska, track)
+                    : isDvbSub ? BitmapSubtitleLoader.LoadMatroskaDvbSub(matroska, track)
                     : BitmapSubtitleLoader.LoadMatroskaPgs(matroska, track);
                 WritePreservedBitmaps(items, outputFile, options);
                 result.SuccessfulFiles++;
@@ -993,6 +1036,16 @@ internal class SubtitleConverter
     }
 
     /// <summary>
+    /// The language part of an output name, or null with --no-language-suffix (#15156).
+    /// Only the language is dropped: the "forced" token and stream labels (dvb_pid,
+    /// xsub_track) still tell same-language outputs apart.
+    /// </summary>
+    internal static string? LanguageToken(ConversionOptions options, string? language)
+    {
+        return options.NoLanguageSuffix ? null : language;
+    }
+
+    /// <summary>
     /// Appends the player convention's "forced" name token (<c>movie.eng.forced.srt</c>)
     /// for forced tracks - MKV forced-display flag, or MP4 tx3g forced displayFlags -
     /// so a forced track no longer collides with its same-language full track.
@@ -1016,6 +1069,9 @@ internal class SubtitleConverter
     /// A name in <paramref name="usedNames"/> was handed out earlier in this run (e.g.
     /// the first of two "eng" tracks) and always counts as taken - --overwrite only
     /// clobbers files from before the run, never the run's own output.
+    /// --no-language-suffix is applied by the callers (<see cref="LanguageToken"/>), so
+    /// with --overwrite a --translate-to run writes back to the input's own name (#15156),
+    /// without it the counter keeps the input safe.
     /// </summary>
     internal static string ResolveOutputFileName(
         string inputFile,
@@ -1037,7 +1093,7 @@ internal class SubtitleConverter
         }
         else
         {
-            var fileName = Path.GetFileNameWithoutExtension(inputFile);
+            var fileName = Path.GetFileNameWithoutExtension(inputFile) + options.OutputFilenameAppend;
             var extension = LibSEIntegration.GetExtensionForFormat(options.Format);
             var outputFolder = string.IsNullOrEmpty(options.OutputFolder)
                 ? Path.GetDirectoryName(inputFile) ?? Directory.GetCurrentDirectory()
@@ -1067,7 +1123,7 @@ internal class SubtitleConverter
         // For container collisions, try inserting the track number first
         if (trackNumber.HasValue && !string.IsNullOrEmpty(languageSuffix))
         {
-            var fileName = Path.GetFileNameWithoutExtension(inputFile);
+            var fileName = Path.GetFileNameWithoutExtension(inputFile) + options.OutputFilenameAppend;
             var withTrack = Path.Combine(dir, $"{fileName}.#{trackNumber.Value}.{languageSuffix}{ext}");
             if ((options.Overwrite || !File.Exists(withTrack)) && usedNames?.Contains(withTrack) != true)
             {
@@ -1135,6 +1191,12 @@ internal record class ConversionOptions
     public double? TargetFps { get; init; }
     public bool Overwrite { get; init; }
 
+    /// <summary>
+    /// --no-language-suffix: never insert a language code (translation target or container
+    /// track language) between the output stem and its extension.
+    /// </summary>
+    public bool NoLanguageSuffix { get; init; }
+
     /// <summary>--keep-timestamp: copy the source file's creation/last-write time onto every output file.</summary>
     public bool KeepTimestamp { get; init; }
     public List<string> Operations { get; init; } = new();
@@ -1180,6 +1242,9 @@ internal record class ConversionOptions
     /// Resolved from defaults + the settings JSON's <c>exportImages</c> section + CLI flags.
     /// </summary>
     public ImageExportStyle ImageStyle { get; init; } = new();
+
+    /// <summary>Appended to the output file name stem (before any language/track suffix). Ignored with <see cref="OutputFilename"/>.</summary>
+    public string? OutputFilenameAppend { get; init; }
     public string? AssaStyleFile { get; init; }
     public int? PacCodePage { get; init; }
     public string? EbuHeaderFile { get; init; }
@@ -1188,7 +1253,7 @@ internal record class ConversionOptions
     public IReadOnlyList<int> TrackNumbers { get; init; } = [];
     public bool ForcedOnly { get; init; }
 
-    /// <summary>OCR engine identifier: <c>tesseract</c> | <c>nocr</c> | <c>ollama</c> | <c>paddle</c>.</summary>
+    /// <summary>OCR engine identifier: <c>tesseract</c> | <c>nocr</c> | <c>binaryocr</c> | <c>ollama</c> | <c>llamacpp</c> | <c>paddle</c> | <c>applevision</c>.</summary>
     public string OcrEngine { get; init; } = "tesseract";
 
     /// <summary>Language code or human name passed to the OCR engine (Tesseract: ISO 639-2 like <c>eng</c>; Paddle: <c>en</c>; Ollama: human name like <c>English</c>).</summary>
@@ -1227,10 +1292,19 @@ internal record class ConversionOptions
     /// white fill with a black outline on transparency; composited onto the opaque white OCR
     /// canvas the fill vanishes and Tesseract receives hollow outline rings, which garbles
     /// some entries deterministically (issue #12291). On by default; disable with
-    /// <c>--no-pgs-isolate-colors</c> to OCR the raw bitmap. Ignored in
+    /// <c>--no-pgs-isolate-colors</c> to OCR the raw bitmap. The CLI always turns it off for
+    /// <c>applevision</c>, which reads the raw bitmap better. Ignored in
     /// <see cref="TimeCodesOnly"/> mode.
     /// </summary>
     public bool PgsIsolateColors { get; init; } = true;
+
+    /// <summary>
+    /// OCR only: prefix each recognised text with the ASSA alignment tag (<c>{\an8}</c>, ...)
+    /// matching where its image sits in the video frame - the OCR window's "Auto-detect ASSA
+    /// alignment". Bottom-centre (an2) is the default and gets no tag. Sources that do not
+    /// report a frame size are left untagged. Ignored in <see cref="TimeCodesOnly"/> mode.
+    /// </summary>
+    public bool OcrAutoDetectAssaAlignment { get; init; }
 
     /// <summary>Ollama API endpoint (default <c>http://localhost:11434/api/chat</c>).</summary>
     public string? OllamaUrl { get; init; }

@@ -7,6 +7,7 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using CommunityToolkit.Mvvm.Input;
+using Nikse.SubtitleEdit.Controls;
 using Nikse.SubtitleEdit.Logic;
 using Nikse.SubtitleEdit.Logic.Config;
 
@@ -77,6 +78,7 @@ public class SpeechToTextAdvancedWindow : Window
             Mode = BindingMode.OneWay,
             UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged,
         });
+        textBoxHelp.WithAccessibleName(Se.Language.General.Help); // read-only engine help; no visible label (#12087)
         var scrollViewer = new ScrollViewer
         {
             Content = textBoxHelp,
@@ -103,7 +105,7 @@ public class SpeechToTextAdvancedWindow : Window
             }
         }, RoutingStrategies.Tunnel);
 
-        var buttonXxlOptions = new SplitButton
+        var buttonXxlOptions = new SeSplitButton
         {
             Content = Se.Language.Video.AudioToText.WhisperXxlStandard,
             Command = vm.WhisperXxlSettingStandardCommand,

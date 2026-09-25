@@ -76,6 +76,7 @@ public class ReviewSpeechWindow : Window
         grid.Add(waveform, 1, 0, 1, 2);
         grid.Add(panelButtons, 2, 0, 1, 2);
         grid.Add(checkBoxAutoContinue, 2, 0);
+        grid.Add(MakePositionLabel(vm), 2, 0, 1, 2);
 
         Content = grid;
 
@@ -151,7 +152,7 @@ public class ReviewSpeechWindow : Window
                 buttonHistory.Bind(Button.OpacityProperty, new Binding(nameof(ReviewRow.HistoryButtonOpacity)));
 
                 var buttonPlay = UiUtil.MakeButton(vm.PlayRowCommand,"fa-solid fa-play")
-                .WithBindIsVisible(nameof(item.IsPlaying), new InverseBooleanConverter())
+                .WithBindIsVisible(nameof(item.IsPlaying), InverseBooleanConverter.Instance)
                 .WithBindEnabled(nameof(item.IsPlayingEnabled));
                 buttonPlay.CommandParameter = item;
 
@@ -235,6 +236,7 @@ public class ReviewSpeechWindow : Window
         {
             textBox.FontFamily = FontFamilyHelper.Make(Se.Settings.Appearance.SubtitleTextBoxAndGridFontName);
         }
+        textBox.WithAccessibleName(Se.Language.General.Text); // edits the selected row's text; no visible label (#12087)
 
         var grid = new Grid
         {
@@ -341,8 +343,8 @@ public class ReviewSpeechWindow : Window
             {
                 new Label
                 {
-                    Content = Se.Language.General.Region,
                     MinWidth = labelMinWidth,
+                    [!ContentProperty] = new Binding(nameof(vm.RegionLabel)) { Mode = BindingMode.OneWay },
                 },
                 UiUtil.MakeComboBox(vm.Regions, vm, nameof(vm.SelectedRegion)).WithWidth(controlMinWidth),
             },
@@ -633,6 +635,35 @@ public class ReviewSpeechWindow : Window
         return grid;
     }
 
+    private static TextBlock MakePositionLabel(ReviewSpeechViewModel vm)
+    {
+        var label = new TextBlock
+        {
+            [!TextBlock.TextProperty] = new Binding(nameof(vm.PositionText)),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            FontSize = 16,
+            FontFeatures = new FontFeatureCollection { FontFeature.Parse("tnum") },
+            Background = Brushes.Transparent, // hit-testable between the digits
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        if (Se.Settings.Appearance.ShowHints)
+        {
+            ToolTip.SetTip(label, Se.Language.Video.GoToVideoPositionDotDotDot);
+        }
+
+        label.PointerPressed += (_, e) =>
+        {
+            if (e.GetCurrentPoint(label).Properties.IsLeftButtonPressed)
+            {
+                e.Handled = true;
+                vm.ShowGoToPositionCommand.Execute(null);
+            }
+        };
+
+        return label;
+    }
+
     private static Border MakeWaveform(ReviewSpeechViewModel vm)
     {
         // Mirror the main window's waveform theme so the review waveform looks the same as the
@@ -673,6 +704,19 @@ public class ReviewSpeechWindow : Window
             if (e.Property == AudioVisualizer.WavePeaksProperty)
             {
                 vm.RefreshWaveformPosition();
+            }
+            else if (e.Property == AudioVisualizer.CurrentVideoPositionSecondsProperty)
+            {
+                vm.UpdatePositionText(audioVisualizer.CurrentVideoPositionSeconds);
+            }
+            else if (e.Property == AudioVisualizer.StartPositionSecondsProperty ||
+                     e.Property == AudioVisualizer.ZoomFactorProperty ||
+                     e.Property == BoundsProperty)
+            {
+                // The control only draws the blocks around the view it was last handed, and
+                // nothing here feeds it on a timer like the main window does - so scrolling,
+                // zooming out or widening the window ran past them into empty waveform (#15102).
+                vm.ReloadWaveformParagraphs();
             }
         };
 

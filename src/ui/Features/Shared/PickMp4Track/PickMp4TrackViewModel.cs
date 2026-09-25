@@ -1,4 +1,4 @@
-using Avalonia.Controls;
+﻿using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -210,7 +210,8 @@ public partial class PickMp4TrackViewModel : ObservableObject
                     ScreenWidth = screenWidth,
                     ScreenHeight = screenHeight,
                     Index = i + 1,
-                    OverridePosition = new SKPointI(subPicture.ImageDisplayArea.Left, subPicture.ImageDisplayArea.Top),
+                    // The bitmap above is cropped to the ink; ImagePosition is where that crop sits.
+                    OverridePosition = subPicture.ImagePosition,
                 };
 
                 // WriteParagraph only writes ImageParameter.Buffer, and CreateParagraph is what
@@ -286,7 +287,7 @@ public partial class PickMp4TrackViewModel : ObservableObject
 
         Rows.Clear();
         var subtitles = GetTrackParagraphs(selectedTrack);
-        SubtitleCountText = string.Format(Se.Language.File.Import.NumberOfSubtitlesX, subtitles.Count);
+        SubtitleCountText = string.Format(Se.Language.File.Import.NumberOfSubtitlesX, subtitles.Count.ToString("N0"));
         var i = 0;
         foreach (var item in subtitles)
         {

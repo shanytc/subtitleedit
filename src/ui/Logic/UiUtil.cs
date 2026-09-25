@@ -7,6 +7,7 @@ using Avalonia.Controls.Templates;
 using Avalonia.Data;
 using Avalonia.Data.Converters;
 using Avalonia.Input;
+using Avalonia.LogicalTree;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -15,6 +16,7 @@ using Avalonia.Styling;
 using Avalonia.VisualTree;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
+using Nikse.SubtitleEdit.Controls.SyntaxTextEditorControl;
 using Nikse.SubtitleEdit.Features.Shared.ColorPicker;
 using Nikse.SubtitleEdit.Logic.Config;
 using Nikse.SubtitleEdit.Logic.Platform.Windows;
@@ -22,6 +24,7 @@ using Nikse.SubtitleEdit.Logic.ValueConverters;
 using Optris.Icons.Avalonia;
 using SkiaSharp;
 using System;
+using System.Globalization;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -398,9 +401,17 @@ public static class UiUtil
     {
         var (displayText, accessKey) = ParseAccessKey(text);
 
+        // Keep the `_` marker in the rendered label so the access letter is underlined while Alt is
+        // held (#14716): the HotKey below fires the command, but with plain-string content nothing
+        // ever told the user that Alt+F / Alt+R existed. AccessText owns the underline; it is not
+        // handed the access key itself, so the chord keeps firing exactly once through the HotKey.
+        object content = accessKey.HasValue
+            ? new AccessText { Text = text, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
+            : displayText;
+
         var button = new Button
         {
-            Content = displayText,
+            Content = content,
             Margin = new Thickness(4, 0),
             Padding = new Thickness(12, 6),
             MinWidth = 80,
@@ -466,6 +477,53 @@ public static class UiUtil
         return TryGetAccessKey(accessChar, out var key) ? (display, key) : (display, null);
     }
 
+    /// <summary>
+    /// WinForms fired a button mnemonic on the bare letter whenever the focused control did not
+    /// consume text, so SE4 users clicked "Find" once and then tapped F / R / A with the focus
+    /// resting on the buttons (discussion #14716). Mirror that: with no modifier held and focus
+    /// outside any text input, a key matching a button's Alt access key runs that button.
+    /// Returns true when a button was invoked.
+    /// </summary>
+    internal static bool TryInvokeBareAccessKey(Window? window, KeyEventArgs e)
+    {
+        if (window == null || e.Handled || e.KeyModifiers != KeyModifiers.None)
+        {
+            return false;
+        }
+
+        var focused = TopLevel.GetTopLevel(window)?.FocusManager?.GetFocusedElement();
+        if (focused is TextBox || focused is AutoCompleteBox || focused is ComboBox { IsEditable: true })
+        {
+            return false;
+        }
+
+        foreach (var button in window.GetLogicalDescendants().OfType<Button>())
+        {
+            if (button.HotKey is not { KeyModifiers: KeyModifiers.Alt } gesture || gesture.Key != e.Key)
+            {
+                continue;
+            }
+
+            if (!button.IsEffectivelyEnabled || !button.IsEffectivelyVisible)
+            {
+                return false;
+            }
+
+            var parameter = button.CommandParameter;
+            if (button.Command?.CanExecute(parameter) != true)
+            {
+                return false;
+            }
+
+            e.Handled = true;
+            button.Focus();
+            button.Command.Execute(parameter);
+            return true;
+        }
+
+        return false;
+    }
+
     private static bool TryGetAccessKey(char c, out Key key)
     {
         var upper = char.ToUpperInvariant(c);
@@ -517,14 +575,28 @@ public static class UiUtil
         return button;
     }
 
+    /// <summary>
+    /// The dialog's accept button. <see cref="Button.IsDefault"/> makes it click on an unhandled
+    /// Enter anywhere in the window - the role WinForms' AcceptButton had in Subtitle Edit 4.
+    /// Initial focus deliberately does not land on this button (a focused button also clicks on
+    /// bare Space, see <see cref="FocusOnFirstActivation"/>), so without this Enter would reach OK
+    /// only after tabbing to it (#14586). Controls that give Enter their own meaning - a multi-line
+    /// TextBox, an open ComboBox, a focused Cancel button - mark the key handled first and win.
+    /// A window key handler that runs OK on Enter itself must also set Handled, or OK runs twice
+    /// (InitialFocusConventionTests checks that).
+    /// </summary>
     public static Button MakeButtonOk(IRelayCommand? command)
     {
-        return MakeButton(Se.Language.General.Ok, command);
+        var button = MakeButton(Se.Language.General.Ok, command);
+        button.IsDefault = true;
+        return button;
     }
 
     public static Button MakeButtonDone(IRelayCommand? command)
     {
-        return MakeButton(Se.Language.General.Done, command);
+        var button = MakeButton(Se.Language.General.Done, command);
+        button.IsDefault = true;
+        return button;
     }
 
     public static Button MakeButtonCancel(IRelayCommand? command)
@@ -557,7 +629,7 @@ public static class UiUtil
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
             Command = command,
-            FontSize = fontSize,
+            FontSize = ScaledFontSize(fontSize),
         };
 
         Attached.SetIcon(button, iconName);
@@ -811,7 +883,7 @@ public static class UiUtil
             comboBox.Bind(ComboBox.IsVisibleProperty, new Binding
             {
                 Path = propertyIsVisiblePath,
-                Mode = BindingMode.TwoWay,
+                Mode = BindingMode.OneWay,
             });
         }
 
@@ -986,7 +1058,7 @@ public static class UiUtil
             textBox.Bind(TextBox.IsVisibleProperty, new Binding
             {
                 Path = propertyIsVisiblePath,
-                Mode = BindingMode.TwoWay,
+                Mode = BindingMode.OneWay,
             });
         }
 
@@ -1055,7 +1127,7 @@ public static class UiUtil
             textBlock.Bind(TextBlock.TextProperty, new Binding
             {
                 Path = textPropertyPath,
-                Mode = BindingMode.TwoWay,
+                Mode = BindingMode.OneWay,
             });
         }
 
@@ -1064,7 +1136,7 @@ public static class UiUtil
             textBlock.Bind(TextBlock.IsVisibleProperty, new Binding
             {
                 Path = visibilityPropertyPath,
-                Mode = BindingMode.TwoWay,
+                Mode = BindingMode.OneWay,
             });
         }
 
@@ -1179,142 +1251,133 @@ public static class UiUtil
         link.Bind(TextBlock.TextProperty, new Binding
         {
             Path = propertyTextPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return link;
     }
 
-    public static TextBlock WithMarginRight(this TextBlock control, int marginRight)
+    public static TControl WithMarginRight<TControl>(this TControl control, int marginRight) where TControl : Layoutable
     {
         var m = control.Margin;
         control.Margin = new Thickness(m.Left, m.Top, marginRight, m.Bottom);
         return control;
     }
 
-    public static TextBox WithMarginRight(this TextBox control, int marginRight)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, m.Top, marginRight, m.Bottom);
-        return control;
-    }
-
-    public static TextBox WithMarginLeft(this TextBox control, int marginLeft)
+    public static TControl WithMarginLeft<TControl>(this TControl control, int marginLeft) where TControl : Layoutable
     {
         var m = control.Margin;
         control.Margin = new Thickness(marginLeft, m.Top, m.Right, m.Bottom);
         return control;
     }
 
-    public static TextBox WithMargin(this TextBox control, int margin)
+    public static TControl WithMargin<TControl>(this TControl control, int margin) where TControl : Layoutable
     {
         control.Margin = new Thickness(margin);
         return control;
     }
 
-    public static SplitButton WithMarginLeft(this SplitButton control, int marginLeft)
+    public static TControl WithMarginTop<TControl>(this TControl control, int marginTop) where TControl : Layoutable
     {
         var m = control.Margin;
-        control.Margin = new Thickness(marginLeft, m.Top, m.Right, m.Bottom);
+        control.Margin = new Thickness(m.Left, marginTop, m.Right, m.Bottom);
         return control;
     }
 
-    public static TextBox WithHeight(this TextBox control, double height)
-    {
-        var m = control.Margin;
-        control.Height = height;
-        return control;
-    }
-
-    public static TextBlock WithMarginLeft(this TextBlock control, int marginLeft)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(marginLeft, m.Top, m.Right, m.Bottom);
-        return control;
-    }
-
-    public static TextBlock WithAlignmentLeft(this TextBlock control)
-    {
-        control.HorizontalAlignment = HorizontalAlignment.Left;
-        return control;
-    }
-
-    public static TextBlock WithAlignmentTop(this TextBlock control)
-    {
-        control.VerticalAlignment = VerticalAlignment.Top;
-        return control;
-    }
-
-    public static TextBlock WithMarginBottom(this TextBlock control, int marginBottom)
+    public static TControl WithMarginBottom<TControl>(this TControl control, int marginBottom) where TControl : Layoutable
     {
         var m = control.Margin;
         control.Margin = new Thickness(m.Left, m.Top, m.Right, marginBottom);
         return control;
     }
 
-    public static Label WithMarginBottom(this Label control, int marginBottom)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, m.Top, m.Right, marginBottom);
-        return control;
-    }
-
-    public static Border WithMarginBottom(this Border control, int marginBottom)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, m.Top, m.Right, marginBottom);
-        return control;
-    }
-
-    public static Border WithMinWidth(this Border control, int minWidth)
-    {
-        control.MinWidth = minWidth;
-        return control;
-    }
-
-    public static Border WithMinHeight(this Border control, int minHeight)
-    {
-        control.MinHeight = minHeight;
-        return control;
-    }
-
-    public static Border WithHeight(this Border control, int height)
-    {
-        control.Height = height;
-        return control;
-    }
-
-    public static Border WithMarginRight(this Border control, int marginRight)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, m.Top, marginRight, m.Bottom);
-        return control;
-    }
-
-    public static TextBlock WithMarginTop(this TextBlock control, int topBottom)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, topBottom, m.Right, m.Bottom);
-        return control;
-    }
-
-    public static ComboBox WithMarginBottom(this ComboBox control, int marginBottom)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, m.Top, m.Right, marginBottom);
-        return control;
-    }
-
-    public static ComboBox WithMargin(this ComboBox control, int left, int top, int right, int bottom)
+    public static TControl WithMargin<TControl>(this TControl control, int left, int top, int right, int bottom) where TControl : Layoutable
     {
         control.Margin = new Thickness(left, top, right, bottom);
         return control;
     }
 
-    public static Button WithMarginBottom(this Button control, int marginBottom)
+    public static TControl WithWidth<TControl>(this TControl control, double width) where TControl : Layoutable
     {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, m.Top, m.Right, marginBottom);
+        control.Width = width;
+        return control;
+    }
+
+    public static TControl WithHeight<TControl>(this TControl control, double height) where TControl : Layoutable
+    {
+        control.Height = height;
+        return control;
+    }
+
+    public static TControl WithMinWidth<TControl>(this TControl control, double minWidth) where TControl : Layoutable
+    {
+        control.MinWidth = minWidth;
+        return control;
+    }
+
+    public static TControl WithMinHeight<TControl>(this TControl control, double minHeight) where TControl : Layoutable
+    {
+        control.MinHeight = minHeight;
+        return control;
+    }
+
+    public static TControl WithAlignmentLeft<TControl>(this TControl control) where TControl : Layoutable
+    {
+        control.HorizontalAlignment = HorizontalAlignment.Left;
+        return control;
+    }
+
+    public static TControl WithAlignmentRight<TControl>(this TControl control) where TControl : Layoutable
+    {
+        control.HorizontalAlignment = HorizontalAlignment.Right;
+        return control;
+    }
+
+    public static TControl WithAlignmentCenter<TControl>(this TControl control) where TControl : Layoutable
+    {
+        control.HorizontalAlignment = HorizontalAlignment.Center;
+        return control;
+    }
+
+    public static TControl WithAlignmentTop<TControl>(this TControl control) where TControl : Layoutable
+    {
+        control.VerticalAlignment = VerticalAlignment.Top;
+        return control;
+    }
+
+    public static TControl WithAlignmentBottom<TControl>(this TControl control) where TControl : Layoutable
+    {
+        control.VerticalAlignment = VerticalAlignment.Bottom;
+        return control;
+    }
+
+    public static TControl WithLeftAlignment<TControl>(this TControl control) where TControl : Layoutable
+    {
+        control.HorizontalAlignment = HorizontalAlignment.Left;
+        return control;
+    }
+
+    public static TControl WithRightAlignment<TControl>(this TControl control) where TControl : Layoutable
+    {
+        control.HorizontalAlignment = HorizontalAlignment.Right;
+        return control;
+    }
+
+    public static TControl WithTopAlignment<TControl>(this TControl control) where TControl : Layoutable
+    {
+        control.VerticalAlignment = VerticalAlignment.Top;
+        return control;
+    }
+
+    public static TControl WithCenterAlignment<TControl>(this TControl control) where TControl : Layoutable
+    {
+        control.VerticalAlignment = VerticalAlignment.Center;
+        return control;
+    }
+
+    public static TControl WithBottomAlignment<TControl>(this TControl control) where TControl : Layoutable
+    {
+        control.VerticalAlignment = VerticalAlignment.Bottom;
         return control;
     }
 
@@ -1324,45 +1387,9 @@ public static class UiUtil
         return control;
     }
 
-    public static Button WithLeftAlignment(this Button control)
-    {
-        control.HorizontalAlignment = HorizontalAlignment.Left;
-        return control;
-    }
-
-    public static SplitButton WithLeftAlignment(this SplitButton control)
-    {
-        control.HorizontalAlignment = HorizontalAlignment.Left;
-        return control;
-    }
-
-    public static Button WithRightAlignment(this Button control)
-    {
-        control.HorizontalAlignment = HorizontalAlignment.Right;
-        return control;
-    }
-
-    public static Button WithTopAlignment(this Button control)
-    {
-        control.VerticalAlignment = VerticalAlignment.Top;
-        return control;
-    }
-
-    public static Button WithCenterAlignment(this Button control)
-    {
-        control.VerticalAlignment = VerticalAlignment.Center;
-        return control;
-    }
-
-    public static Button WithBottomAlignment(this Button control)
-    {
-        control.VerticalAlignment = VerticalAlignment.Bottom;
-        return control;
-    }
-
     public static Button WithIconRight(this Button control, string iconName)
     {
-        var label = new TextBlock() { Text = control.Content?.ToString(), Padding = new Thickness(0, 0, 4, 0) };
+        var (label, accessibleName) = MakeIconButtonLabel(DetachContent(control), new Thickness(0, 0, 4, 0));
         var image = new ContentControl();
         Attached.SetIcon(image, iconName);
         var stackPanelApplyFixes = new StackPanel
@@ -1373,12 +1400,18 @@ public static class UiUtil
 
         control.Content = stackPanelApplyFixes;
 
+        // Same as WithIconLeft: the panel content has no UIA name of its own, keep the text.
+        if (!string.IsNullOrEmpty(accessibleName))
+        {
+            AutomationProperties.SetName(control, accessibleName);
+        }
+
         return control;
     }
 
     public static Button WithIconLeft(this Button control, string iconName)
     {
-        var label = new TextBlock() { Text = control.Content?.ToString(), Padding = new Thickness(4, 0, 0, 0) };
+        var (label, accessibleName) = MakeIconButtonLabel(DetachContent(control), new Thickness(4, 0, 0, 0));
         var image = new ContentControl();
         Attached.SetIcon(image, iconName);
         var stackPanelApplyFixes = new StackPanel
@@ -1392,12 +1425,40 @@ public static class UiUtil
         // Replacing the text content with an icon+text panel loses the button's computed UIA
         // name - keep the original text as the accessible name so screen readers still
         // announce it (#11745/#12087 accessibility work).
-        if (!string.IsNullOrEmpty(label.Text))
+        if (!string.IsNullOrEmpty(accessibleName))
         {
-            AutomationProperties.SetName(control, label.Text);
+            AutomationProperties.SetName(control, accessibleName);
         }
 
         return control;
+    }
+
+    /// <summary>
+    /// The label for an icon+text button. A button made by <see cref="MakeButton(string, IRelayCommand?, object?)"/>
+    /// from a label with an access key holds an <see cref="AccessText"/>, not a string: keep that
+    /// control so the Alt underline survives - flattening it with ToString() would print the type
+    /// name as the caption. The accessible name is the caption without the `_` marker.
+    /// </summary>
+    // An AccessText content is a logical child of the button; it has to leave the button before the
+    // icon panel adopts it, or it ends up in the panel with no logical parent and the window
+    // throws while attaching to the tree.
+    private static object? DetachContent(Button control)
+    {
+        var content = control.Content;
+        control.Content = null;
+        return content;
+    }
+
+    private static (TextBlock Label, string? AccessibleName) MakeIconButtonLabel(object? content, Thickness padding)
+    {
+        if (content is AccessText accessText)
+        {
+            accessText.Padding = padding;
+            return (accessText, ParseAccessKey(accessText.Text ?? string.Empty).Display);
+        }
+
+        var text = content?.ToString();
+        return (new TextBlock { Text = text, Padding = padding }, text);
     }
 
     public static Button WithCommandParameter<T>(this Button control, T parameter)
@@ -1406,9 +1467,17 @@ public static class UiUtil
         return control;
     }
 
-    // Like WithIconLeft, but the text is bound to a view-model property instead of being fixed,
-    // so the caption can change at runtime (e.g. "Download" vs "Re-download").
-    public static Button WithIconLeftBindText(this Button control, string iconName, string textPropertyPath)
+    /// <summary>
+    /// Like WithIconLeft, but the text is bound to a view-model property instead of being fixed,
+    /// so the caption can change at runtime (e.g. "Download" vs "Re-download").
+    /// </summary>
+    /// <param name="accessibleNamePropertyPath">
+    /// Optional view-model property with a fuller name for screen readers than the caption -
+    /// a row of "Download" buttons needs "Download &lt;model&gt;" to tell them apart (#12087).
+    /// Defaults to the caption.
+    /// </param>
+    public static Button WithIconLeftBindText(this Button control, string iconName, string textPropertyPath,
+        string? accessibleNamePropertyPath = null)
     {
         var label = new TextBlock { Padding = new Thickness(4, 0, 0, 0) };
         label.Bind(TextBlock.TextProperty, new Binding { Path = textPropertyPath });
@@ -1422,18 +1491,11 @@ public static class UiUtil
             Children = { image, label },
         };
 
-        return control;
-    }
+        // A button whose content is a panel has no text for UI Automation to use, so its name
+        // falls back to the content's type and NVDA announces "Avalonia.Controls.StackPanel"
+        // (#12087). Bind the caption (or a fuller name) as the accessible name instead.
+        control.Bind(AutomationProperties.NameProperty, new Binding { Path = accessibleNamePropertyPath ?? textPropertyPath });
 
-    public static ComboBox WithLeftAlignment(this ComboBox control)
-    {
-        control.HorizontalAlignment = HorizontalAlignment.Left;
-        return control;
-    }
-
-    public static ComboBox WithTopAlignment(this ComboBox control)
-    {
-        control.VerticalAlignment = VerticalAlignment.Top;
         return control;
     }
 
@@ -1442,7 +1504,7 @@ public static class UiUtil
         control.Bind(Button.IsEnabledProperty, new Binding
         {
             Path = isEnabledPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1453,7 +1515,7 @@ public static class UiUtil
         control.Bind(SplitButton.IsEnabledProperty, new Binding
         {
             Path = isEnabledPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1464,7 +1526,7 @@ public static class UiUtil
         control.Bind(SplitButton.IsVisibleProperty, new Binding
         {
             Path = isVisiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1475,7 +1537,7 @@ public static class UiUtil
         control.Bind(ComboBox.IsEnabledProperty, new Binding
         {
             Path = isEnabledPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1486,7 +1548,7 @@ public static class UiUtil
         control.Bind(ComboBox.IsVisibleProperty, new Binding
         {
             Path = isVisiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1503,7 +1565,7 @@ public static class UiUtil
         control.Bind(NumericUpDown.IsEnabledProperty, new Binding
         {
             Path = isEnabledPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1514,7 +1576,7 @@ public static class UiUtil
         control.Bind(Button.ContentProperty, new Binding
         {
             Path = contentPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1525,7 +1587,7 @@ public static class UiUtil
         control.Bind(CheckBox.IsEnabledProperty, new Binding
         {
             Path = isEnabledPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1536,7 +1598,7 @@ public static class UiUtil
         control.Bind(TextBox.IsEnabledProperty, new Binding
         {
             Path = isEnabledPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1548,7 +1610,7 @@ public static class UiUtil
         {
             Converter = converter,
             Path = isEnabledPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1560,7 +1622,7 @@ public static class UiUtil
         {
             Converter = converter,
             Path = isEnabledPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1571,7 +1633,7 @@ public static class UiUtil
         control.Bind(TextBox.IsVisibleProperty, new Binding
         {
             Path = isVisiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1584,7 +1646,7 @@ public static class UiUtil
         {
             Converter = converter,
             Path = isEnabledPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1595,7 +1657,7 @@ public static class UiUtil
         control.Bind(Button.IsVisibleProperty, new Binding
         {
             Path = isVisiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1607,7 +1669,7 @@ public static class UiUtil
         control.Bind(Button.IsVisibleProperty, new Binding
         {
             Path = isVisiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1618,7 +1680,7 @@ public static class UiUtil
         control.Bind(Button.IsVisibleProperty, new Binding
         {
             Path = isVisiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
             Converter = converter,
         });
 
@@ -1630,7 +1692,7 @@ public static class UiUtil
         control.Bind(Border.IsVisibleProperty, new Binding
         {
             Path = isVisiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
             Converter = converter,
         });
 
@@ -1642,7 +1704,7 @@ public static class UiUtil
         control.Bind(Border.IsVisibleProperty, new Binding
         {
             Path = isVisiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1686,7 +1748,7 @@ public static class UiUtil
         control.Bind(Button.IsEnabledProperty, new Binding
         {
             Path = isEnabledPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -1697,7 +1759,7 @@ public static class UiUtil
         control.Bind(Button.IsEnabledProperty, new Binding
         {
             Path = isEnabledPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
             Converter = converter,
         });
 
@@ -1715,6 +1777,23 @@ public static class UiUtil
         return control;
     }
 
+    /// <summary>
+    /// For a combo box whose items are frame rates as <see cref="double"/>: print them with a
+    /// decimal point ("23.976") whatever the OS decimal separator, like the toolbar frame rate
+    /// combo (which holds invariant strings) - a bare double item would show "23,976" on a
+    /// comma-decimal locale. Applies to the dropdown items and the selection box alike.
+    /// </summary>
+    public static ComboBox WithFrameRateDisplay(this ComboBox control)
+    {
+        control.DisplayMemberBinding = new Binding(".")
+        {
+            StringFormat = "{0:0.###}",
+            ConverterCulture = CultureInfo.InvariantCulture,
+        };
+
+        return control;
+    }
+
     public static ComboBox WithBindItemsSource(this ComboBox control, string itemsSourcePropertyBinding)
     {
         control.Bind(ItemsControl.ItemsSourceProperty, new Binding
@@ -1725,77 +1804,42 @@ public static class UiUtil
         return control;
     }
 
-    public static TextBlock WithMargin(this TextBlock control, int margin)
-    {
-        control.Margin = new Thickness(margin);
-        return control;
-    }
-
     public static TextBlock WithPadding(this TextBlock control, int padding)
     {
         control.Padding = new Thickness(padding);
         return control;
     }
 
+    /// <summary>
+    /// Scales a design-time font size by the user's "Font scale (%)" setting (#14812). Route every
+    /// explicit control font size through this so it follows the setting; the window-inherited
+    /// default is scaled by <see cref="UiTheme.ApplyScaleToWindow"/>. Icons undo this again via
+    /// the icon style in <see cref="UiTheme"/>, so icon sizes stay put.
+    /// </summary>
+    public static double ScaledFontSize(double fontSize)
+    {
+        return fontSize * UiTheme.FontScale;
+    }
+
+    /// <summary>
+    /// Design-time font size for controls that outlive a font scale change (the main window's
+    /// hint labels, which are not rebuilt in undocked mode). <see cref="UiTheme.ApplyScaleToWindow"/>
+    /// walks every open window and re-applies <see cref="ScaledFontSize"/> for each control
+    /// carrying this, so the new scale shows without a restart. Set it next to FontSize:
+    /// <c>FontSize = UiUtil.ScaledFontSize(12), [UiUtil.DesignFontSizeProperty] = 12</c>.
+    /// </summary>
+    public static readonly AttachedProperty<double> DesignFontSizeProperty =
+        AvaloniaProperty.RegisterAttached<Control, double>("DesignFontSize", typeof(UiUtil), double.NaN);
+
     public static TextBlock WithFontSize(this TextBlock control, double fontSize)
     {
-        control.FontSize = fontSize;
-        return control;
-    }
-
-    public static StackPanel WithMarginTop(this StackPanel control, int marginTop)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, marginTop, m.Right, m.Bottom);
-        return control;
-    }
-
-    public static StackPanel WithMarginBottom(this StackPanel control, int marginBottom)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, m.Top, m.Right, marginBottom);
-        return control;
-    }
-
-    public static StackPanel WithAlignmentLeft(this StackPanel control)
-    {
-        control.HorizontalAlignment = HorizontalAlignment.Left;
+        control.FontSize = ScaledFontSize(fontSize);
         return control;
     }
 
     public static StackPanel WithSpacing(this StackPanel control, int spacing)
     {
         control.Spacing = spacing;
-        return control;
-    }
-
-    public static StackPanel WithAlignmentTop(this StackPanel control)
-    {
-        control.VerticalAlignment = VerticalAlignment.Top;
-        return control;
-    }
-
-    public static Label WithAlignmentTop(this Label control)
-    {
-        control.VerticalAlignment = VerticalAlignment.Top;
-        return control;
-    }
-
-    public static Label WithAlignmentBottom(this Label control)
-    {
-        control.VerticalAlignment = VerticalAlignment.Bottom;
-        return control;
-    }
-
-    public static Label WithAlignmentRight(this Label control)
-    {
-        control.HorizontalAlignment = HorizontalAlignment.Right;
-        return control;
-    }
-
-    public static Label WithAlignmentCenter(this Label control)
-    {
-        control.HorizontalAlignment = HorizontalAlignment.Center;
         return control;
     }
 
@@ -1811,118 +1855,21 @@ public static class UiUtil
         return control;
     }
 
-    public static Label WithMarginLeft(this Label control, int marginLeft)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(marginLeft, m.Top, m.Right, m.Bottom);
-        return control;
-    }
-
     public static Label WithOpacity(this Label control, double opacity)
     {
         control.Opacity = opacity;
         return control;
     }
 
-    public static Label WithMinWidth(this Label control, int minWidth)
-    {
-        control.MinWidth = minWidth;
-        return control;
-    }
-
-    public static Label WithMinHeight(this Label control, int minHeight)
-    {
-        control.MinHeight = minHeight;
-        return control;
-    }
-
-    public static Label WithMarginRight(this Label control, int marginRight)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, m.Top, marginRight, m.Bottom);
-        return control;
-    }
-
-    public static Label WithMarginTop(this Label control, int marginTop)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, marginTop, m.Right, m.Bottom);
-        return control;
-    }
-
     public static Label WithFontSize(this Label control, int fontSize)
     {
-        control.FontSize = fontSize;
-        return control;
-    }
-
-    public static ComboBox WithMarginTop(this ComboBox control, int marginTop)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, marginTop, m.Right, m.Bottom);
-        return control;
-    }
-
-    public static ComboBox WithMarginLeft(this ComboBox control, int marginLeft)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(marginLeft, m.Top, m.Right, m.Bottom);
-        return control;
-    }
-
-    public static ComboBox WithMarginRight(this ComboBox control, int marginRight)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, m.Top, marginRight, m.Bottom);
-        return control;
-    }
-
-    public static Button WithMarginTop(this Button control, int marginTop)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, marginTop, m.Right, m.Bottom);
-        return control;
-    }
-
-    public static SplitButton WithMarginTop(this SplitButton control, int marginTop)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, marginTop, m.Right, m.Bottom);
+        control.FontSize = ScaledFontSize(fontSize);
         return control;
     }
 
     public static Button WithFontSize(this Button control, double fontSize)
     {
-        control.FontSize = fontSize;
-        return control;
-    }
-
-    public static Button WithMarginLeft(this Button control, int marginLeft)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(marginLeft, m.Top, m.Right, m.Bottom);
-        return control;
-    }
-
-
-    public static CheckBox WithMarginLeft(this CheckBox control, int marginLeft)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(marginLeft, m.Top, m.Right, m.Bottom);
-        return control;
-    }
-
-    public static Button WithMarginRight(this Button control, int marginRight)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, m.Top, marginRight, m.Bottom);
-        return control;
-    }
-
-    public static CheckBox WithMarginRight(this CheckBox control, int marginRight)
-    {
-        var m = control.Margin;
-        control.Margin = new Thickness(m.Left, m.Top, marginRight, m.Bottom);
+        control.FontSize = ScaledFontSize(fontSize);
         return control;
     }
 
@@ -1934,33 +1881,15 @@ public static class UiUtil
         return control;
     }
 
-    public static Button WithMargin(this Button control, int margin)
-    {
-        control.Margin = new Thickness(margin);
-        return control;
-    }
-
     public static Button WithPadding(this Button control, int padding)
     {
         control.Padding = new Thickness(padding);
         return control;
     }
 
-    public static Button WithMargin(this Button control, int left, int top, int right, int bottom)
-    {
-        control.Margin = new Thickness(left, top, right, bottom);
-        return control;
-    }
-
     public static Button WithBold(this Button control)
     {
         control.FontWeight = FontWeight.Bold;
-        return control;
-    }
-
-    public static TextBlock WithMinwidth(this TextBlock control, int width)
-    {
-        control.MinWidth = width;
         return control;
     }
 
@@ -1975,6 +1904,61 @@ public static class UiUtil
     }
 
     /// <summary>
+    /// Decorates a search/filter box with a magnifier icon on the left and an "x" button on the
+    /// right that clears the text. The button only shows while there is text, is not a tab stop,
+    /// and returns focus to the box. Clearing sets Text, so bindings and TextChanged handlers
+    /// re-run the filter just as when the user deletes the text.
+    /// </summary>
+    public static T WithSearchAndClearIcons<T>(this T textBox) where T : TextBox
+    {
+        textBox.InnerLeftContent = new Icon
+        {
+            Value = IconNames.Find,
+            FontSize = 14,
+            Margin = new Thickness(6, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = GetTextColor(0.6d),
+        };
+
+        var clearButton = new Button
+        {
+            Content = new Icon
+            {
+                Value = IconNames.Close,
+                FontSize = 14,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = GetTextColor(0.6d),
+            },
+            Width = 24,
+            Height = 24,
+            Padding = new Thickness(0),
+            Margin = new Thickness(0, 0, 2, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = Brushes.Transparent,
+            BorderBrush = null,
+            Focusable = false,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        }.WithAccessibleName(Se.Language.General.Clear);
+
+        // Explicit Source: inner content only gets a DataContext once the TextBox template is applied.
+        clearButton.Bind(Visual.IsVisibleProperty, new Binding(nameof(TextBox.Text)) { Source = textBox, Converter = StringConverters.IsNotNullOrEmpty });
+        if (Se.Settings.Appearance.ShowHints)
+        {
+            ToolTip.SetTip(clearButton, Se.Language.General.Clear);
+        }
+
+        clearButton.Click += (_, _) =>
+        {
+            textBox.Text = string.Empty;
+            textBox.Focus();
+        };
+
+        textBox.InnerRightContent = clearButton;
+        return textBox;
+    }
+
+    /// <summary>
     /// Links this control to an existing visible label so a screen reader announces the label as the
     /// control's name (UIA LabeledBy). Prefer this over a hard-coded name when a label already exists,
     /// as it stays correct for bound/localized label text (#11745).
@@ -1985,39 +1969,9 @@ public static class UiUtil
         return control;
     }
 
-    public static Button WithMinWidth(this Button control, int width)
-    {
-        control.MinWidth = width;
-        return control;
-    }
-
-    public static SplitButton WithMinWidth(this SplitButton control, int width)
-    {
-        control.MinWidth = width;
-        return control;
-    }
-
-    public static Button WithMinHeight(this Button control, int height)
-    {
-        control.MinHeight = height;
-        return control;
-    }
-
     public static Button WithParameter(this Button control, object parameter)
     {
         control.CommandParameter = parameter;
-        return control;
-    }
-
-    public static ComboBox WithMinWidth(this ComboBox control, int width)
-    {
-        control.MinWidth = width;
-        return control;
-    }
-
-    public static ComboBox WithWidth(this ComboBox control, int width)
-    {
-        control.Width = width;
         return control;
     }
 
@@ -2153,7 +2107,7 @@ public static class UiUtil
         control.Bind(Visual.IsVisibleProperty, new Binding
         {
             Path = visibilityPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -2406,7 +2360,7 @@ public static class UiUtil
             Label.IsVisibleProperty,
             CompiledBinding.Create(
                 isVisibleExpression,
-                mode: BindingMode.TwoWay
+                mode: BindingMode.OneWay
             )
         );
 
@@ -2547,7 +2501,7 @@ public static class UiUtil
             control.Bind(NumericUpDown.IsVisibleProperty, new Binding
             {
                 Path = propertyIsVisiblePath,
-                Mode = BindingMode.TwoWay,
+                Mode = BindingMode.OneWay,
             });
         }
 
@@ -2591,7 +2545,7 @@ public static class UiUtil
             control.Bind(NumericUpDown.IsVisibleProperty, new Binding
             {
                 Path = propertyIsVisiblePath,
-                Mode = BindingMode.TwoWay,
+                Mode = BindingMode.OneWay,
             });
         }
 
@@ -2614,6 +2568,7 @@ public static class UiUtil
             Maximum = max,
             Increment = 0.01m,
             FormatString = "F2", // Force two decimals
+            TextConverter = new NumericUpDownDecimalTextConverter("F2"),
             Foreground = GetTextColor(),
         };
 
@@ -2632,7 +2587,7 @@ public static class UiUtil
             control.Bind(NumericUpDown.IsVisibleProperty, new Binding
             {
                 Path = propertyIsVisiblePath,
-                Mode = BindingMode.TwoWay,
+                Mode = BindingMode.OneWay,
             });
         }
 
@@ -2654,7 +2609,8 @@ public static class UiUtil
             Minimum = min,
             Maximum = max,
             Increment = 0.01m,
-            FormatString = "F3" // Force three decimals
+            FormatString = "F3", // Force three decimals
+            TextConverter = new NumericUpDownDecimalTextConverter("F3"),
         };
 
         if (propertyValuePath != null)
@@ -2671,7 +2627,7 @@ public static class UiUtil
             control.Bind(NumericUpDown.IsVisibleProperty, new Binding
             {
                 Path = propertyIsVisiblePath,
-                Mode = BindingMode.TwoWay,
+                Mode = BindingMode.OneWay,
             });
         }
 
@@ -2694,6 +2650,7 @@ public static class UiUtil
             Maximum = max,
             Increment = 0.1m,
             FormatString = "F1",
+            TextConverter = new NumericUpDownDecimalTextConverter("F1"),
         };
 
         if (propertyValuePath != null)
@@ -2711,7 +2668,7 @@ public static class UiUtil
             control.Bind(NumericUpDown.IsVisibleProperty, new Binding
             {
                 Path = propertyIsVisiblePath,
-                Mode = BindingMode.TwoWay,
+                Mode = BindingMode.OneWay,
             });
         }
 
@@ -2745,8 +2702,8 @@ public static class UiUtil
     }
 
     /// <summary>
-    /// Forwards the accessible name set on a <see cref="NumericUpDown"/> to its inner
-    /// PART_TextBox. The text box is the element that actually receives keyboard focus,
+    /// Forwards the accessible name (and LabeledBy link) set on a <see cref="NumericUpDown"/>
+    /// to its inner PART_TextBox. The text box is the element that actually receives keyboard focus,
     /// so without this a screen reader would announce the focused field with no name
     /// (issue #11553). Callers just set <c>AutomationProperties.Name</c> on the control.
     /// </summary>
@@ -2756,7 +2713,36 @@ public static class UiUtil
         {
             var textBox = e.NameScope.Find<TextBox>("PART_TextBox");
             textBox?.Bind(AutomationProperties.NameProperty, control.GetObservable(AutomationProperties.NameProperty));
+            textBox?.Bind(AutomationProperties.LabeledByProperty, control.GetObservable(AutomationProperties.LabeledByProperty));
+
+            var spinner = e.NameScope.Find<ButtonSpinner>("PART_Spinner");
+            if (spinner != null)
+            {
+                spinner.TemplateApplied += (_, spinnerArgs) => NameSpinnerButtons(spinnerArgs.NameScope);
+            }
         };
+    }
+
+    /// <summary>
+    /// The Fluent ButtonSpinner template gives its increase/decrease buttons a PathIcon as
+    /// content and no accessible name, so a screen reader announced them as
+    /// "Avalonia.Controls.PathIcon button" (#12087). Name them, and take them out of the tab
+    /// order: the text box already changes the value with the Up/Down arrows, so the two
+    /// extra tab stops per field only added noise for keyboard users.
+    /// </summary>
+    private static void NameSpinnerButtons(INameScope nameScope)
+    {
+        if (nameScope.Find<InputElement>("PART_IncreaseButton") is { } increase)
+        {
+            AutomationProperties.SetName(increase, Se.Language.General.Increase);
+            KeyboardNavigation.SetIsTabStop(increase, false);
+        }
+
+        if (nameScope.Find<InputElement>("PART_DecreaseButton") is { } decrease)
+        {
+            AutomationProperties.SetName(decrease, Se.Language.General.Decrease);
+            KeyboardNavigation.SetIsTabStop(decrease, false);
+        }
     }
 
     public static Label WithBindText(this Label control, object viewModel, string contentPropertyPath)
@@ -2765,7 +2751,7 @@ public static class UiUtil
         control.Bind(Label.ContentProperty, new Binding
         {
             Path = contentPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -2795,7 +2781,7 @@ public static class UiUtil
         control.Bind(Label.ContentProperty, new Binding
         {
             Path = contentPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
             Converter = valueConverter,
         });
 
@@ -2817,7 +2803,7 @@ public static class UiUtil
         control.Bind(TextBlock.TextProperty, new Binding
         {
             Path = contentPropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -2829,7 +2815,7 @@ public static class UiUtil
         control.Bind(Label.IsVisibleProperty, new Binding
         {
             Path = visiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -2866,7 +2852,7 @@ public static class UiUtil
         control.Bind(Grid.IsVisibleProperty, new Binding
         {
             Path = visiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -2878,7 +2864,7 @@ public static class UiUtil
         control.Bind(TextBlock.IsVisibleProperty, new Binding
         {
             Path = visiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -2890,7 +2876,7 @@ public static class UiUtil
         control.Bind(TextBlock.IsEnabledProperty, new Binding
         {
             Path = visiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -2903,7 +2889,7 @@ public static class UiUtil
         control.Bind(Label.IsVisibleProperty, new Binding
         {
             Path = visiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
             Converter = converter,
         });
 
@@ -2916,7 +2902,7 @@ public static class UiUtil
         control.Bind(StackPanel.IsVisibleProperty, new Binding
         {
             Path = visiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
         });
 
         return control;
@@ -2929,14 +2915,14 @@ public static class UiUtil
         control.Bind(StackPanel.IsVisibleProperty, new Binding
         {
             Path = visiblePropertyPath,
-            Mode = BindingMode.TwoWay,
+            Mode = BindingMode.OneWay,
             Converter = converter,
         });
 
         return control;
     }
 
-    private static bool IsDarkTheme()
+    public static bool IsDarkTheme()
     {
         var app = Application.Current;
         if (app == null)
@@ -2988,60 +2974,65 @@ public static class UiUtil
         }
     }
 
+    private static Styles? _uiFontStyles;
+
     public static void SetFontName(string fontName)
     {
-        if (Application.Current == null || string.IsNullOrEmpty(Se.Settings.Appearance.FontName))
+        if (Application.Current == null)
         {
             return;
         }
 
-        Application.Current.Styles.Add(new Style(x => x.OfType<TextBlock>())
+        // Replace (not append) the font styles, so Settings OK/Apply does not pile up styles and
+        // switching back to the default font takes effect without a restart.
+        if (_uiFontStyles != null)
+        {
+            Application.Current.Styles.Remove(_uiFontStyles);
+            _uiFontStyles = null;
+        }
+
+        if (string.IsNullOrEmpty(fontName))
+        {
+            return;
+        }
+
+        var fontFamily = FontFamilyHelper.Make(fontName);
+        var styles = new Styles();
+
+        // Set the font on windows and popup roots only and let it inherit down: CheckBox/RadioButton/
+        // ToggleSwitch/TabItem etc. render plain string content without a TextBlock, so a TextBlock
+        // style alone misses them (#15255). Do not style every TemplatedControl - that also hits
+        // template parts like a TextBox's ScrollViewer and cuts off a font set locally on the control
+        // (e.g. the subtitle text box font), so the TextPresenter fell back to the UI font.
+        styles.Add(new Style(x => x.Is<TopLevel>())
         {
             Setters =
             {
-                new Setter(TextBlock.FontFamilyProperty, FontFamilyHelper.Make(fontName)),
+                new Setter(TopLevel.FontFamilyProperty, fontFamily),
             }
         });
 
-        Application.Current.Styles.Add(new Style(x => x.OfType<TextBox>())
+        styles.Add(new Style(x => x.Is<TextBlock>())
         {
             Setters =
             {
-                new Setter(TextBox.FontFamilyProperty, FontFamilyHelper.Make(fontName)),
+                new Setter(TextBlock.FontFamilyProperty, fontFamily),
             }
         });
 
-        Application.Current.Styles.Add(new Style(x => x.OfType<Button>())
+        // The source editor (source view, batch convert ASSA) draws its own text, so it is not
+        // covered by the styles above and would stay in Avalonia's default sans (#14457).
+        // The format preview sets a monospace family locally, which wins over this style.
+        styles.Add(new Style(x => x.OfType<SyntaxTextEditor>())
         {
             Setters =
             {
-                new Setter(Button.FontFamilyProperty, FontFamilyHelper.Make(fontName)),
+                new Setter(SyntaxTextEditor.FontFamilyProperty, fontFamily),
             }
         });
 
-        Application.Current.Styles.Add(new Style(x => x.OfType<Avalonia.Controls.MenuItem>())
-        {
-            Setters =
-            {
-                new Setter(Avalonia.Controls.MenuItem.FontFamilyProperty, FontFamilyHelper.Make(fontName)),
-            }
-        });
-
-        Application.Current.Styles.Add(new Style(x => x.OfType<Label>())
-        {
-            Setters =
-            {
-                new Setter(Label.FontFamilyProperty, FontFamilyHelper.Make(fontName)),
-            }
-        });
-
-        Application.Current.Styles.Add(new Style(x => x.OfType<ComboBox>())
-        {
-            Setters =
-            {
-                new Setter(ComboBox.FontFamilyProperty, FontFamilyHelper.Make(fontName)),
-            }
-        });
+        _uiFontStyles = styles;
+        Application.Current.Styles.Add(styles);
     }
 
     public static StackPanel MakeHorizontalPanel(params Control[] controls)
@@ -3296,6 +3287,10 @@ public static class UiUtil
                     ClampToWorkingArea(window);
                 }
             }, DispatcherPriority.Background);
+
+            // Name every input after its visible label for screen readers - once, here,
+            // instead of in each of the ~300 windows (#12087). See AccessibleLabels.
+            AccessibleLabels.Apply(window);
         };
     }
 
@@ -3383,6 +3378,21 @@ public static class UiUtil
 
         var state = SeWindowPosition.SaveState(window);
 
+        // A minimized window reports where the OS parked it (-32000, -32000 on Windows), not
+        // where the user left it - and the undocked windows minimize instead of closing, so
+        // quitting with one of them minimized is common. Save where it was before. (#15106)
+        if (window.WindowState == WindowState.Minimized)
+        {
+            LastNormalWindowStates.TryGetValue(window, out var last);
+            var screenBounds = last?.Position is { } lastPosition
+                ? window.Screens.ScreenFromPoint(lastPosition)?.Bounds
+                : null;
+            if (!state.TryApplyStateBeforeMinimize(last?.Position, last?.State, screenBounds))
+            {
+                return; // nothing better known - keep what was saved earlier
+            }
+        }
+
         var existing = Se.Settings.General.WindowPositions.FirstOrDefault(wp => wp.WindowName == state.WindowName);
         if (existing != null)
         {
@@ -3392,12 +3402,59 @@ public static class UiUtil
         Se.Settings.General.WindowPositions.Add(state);
     }
 
+    private sealed class LastNormalWindowState
+    {
+        public PixelPoint? Position { get; set; }
+        public WindowState State { get; set; }
+    }
+
+    private static readonly ConditionalWeakTable<Window, LastNormalWindowState> LastNormalWindowStates = new();
+
+    /// <summary>
+    /// Remembers the position and state the window has while it is not minimized, so
+    /// <see cref="SaveWindowPosition"/> has something to save for a minimized window.
+    /// </summary>
+    private static void TrackLastNormalWindowState(Window window)
+    {
+        if (LastNormalWindowStates.TryGetValue(window, out _))
+        {
+            return;
+        }
+
+        var last = new LastNormalWindowState();
+        LastNormalWindowStates.Add(window, last);
+
+        void Update(PixelPoint position)
+        {
+            if (window.WindowState == WindowState.Minimized ||
+                SeWindowPosition.IsMinimizedPosition(position.X, position.Y))
+            {
+                return;
+            }
+
+            last.Position = position;
+            last.State = window.WindowState;
+        }
+
+        Update(window.Position);
+        window.PositionChanged += (_, e) => Update(e.Point);
+        window.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == Window.WindowStateProperty)
+            {
+                Update(window.Position);
+            }
+        };
+    }
+
     public static void RestoreWindowPosition(Window? window)
     {
         if (!Se.Settings.General.RememberPositionAndSize || window == null)
         {
             return;
         }
+
+        TrackLastNormalWindowState(window);
 
         var existing = Se.Settings.General.WindowPositions.FirstOrDefault(wp => wp.WindowName == window.Name);
         if (existing == null)
@@ -3552,6 +3609,25 @@ public static class UiUtil
                string.Equals(ShortcutManager.GetShortcutKey(e).ToString(), keyName, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static readonly ConditionalWeakTable<Window, Func<bool>> WindowSystemMenuOverrides = new();
+
+    /// <summary>
+    /// Lets a window claim Alt+Space for itself: while <paramref name="isOverridden"/> returns
+    /// true, <see cref="TryHandleWindowSystemMenu"/> leaves the key event alone instead of
+    /// opening the Windows system menu. The main window uses this so a user-assigned Alt+Space
+    /// shortcut wins over the Windows convention (#14536), mirroring the F10 rule; the shortcut
+    /// key-capture window uses it so the chord can be recorded at all.
+    /// </summary>
+    internal static void SetWindowSystemMenuOverride(Window window, Func<bool> isOverridden)
+    {
+        WindowSystemMenuOverrides.AddOrUpdate(window, isOverridden);
+    }
+
+    internal static bool IsWindowSystemMenuOverridden(Window window)
+    {
+        return WindowSystemMenuOverrides.TryGetValue(window, out var isOverridden) && isOverridden();
+    }
+
     internal static bool TryHandleWindowSystemMenu(KeyEventArgs e, Window? window)
     {
         if (!OperatingSystem.IsWindows() || window == null)
@@ -3561,6 +3637,12 @@ public static class UiUtil
 
         if (e.Key == Key.Space && e.KeyModifiers == KeyModifiers.Alt)
         {
+            if (IsWindowSystemMenuOverridden(window))
+            {
+                return false;
+            }
+
+
             SystemMenu.Show(window);
             e.Handled = true;
             return true;

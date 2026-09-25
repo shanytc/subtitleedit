@@ -60,14 +60,14 @@ public class CrispEmbedSettingsWindow : Window
         var title = new TextBlock
         {
             Text = CrispEmbedEngine.StaticName,
-            FontSize = 18,
+            FontSize = UiUtil.ScaledFontSize(18),
             FontWeight = FontWeight.SemiBold,
         };
 
         var subtitle = new TextBlock
         {
             Text = Se.Language.Ocr.CrispEmbedDescription,
-            FontSize = 12,
+            FontSize = UiUtil.ScaledFontSize(12),
             Opacity = 0.75,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 2, 0, 0),
@@ -115,7 +115,7 @@ public class CrispEmbedSettingsWindow : Window
             Background = Brushes.Transparent,
             Padding = new Thickness(0),
             VerticalContentAlignment = VerticalAlignment.Center,
-            FontSize = 12,
+            FontSize = UiUtil.ScaledFontSize(12),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             [!TextBox.TextProperty] = new Binding(nameof(vm.InstallFolder)),
         };
@@ -198,11 +198,13 @@ public class CrispEmbedSettingsWindow : Window
 
                 // Fixed width so the buttons line up down the column - "Download" and
                 // "Re-download" are different lengths and the rows mix both.
+                // The accessible name carries the model, as the rows are a column of
+                // identical "Download" buttons to a screen reader (#12087).
                 var button = UiUtil.MakeButton(string.Empty)
-                    .WithIconLeft(IconNames.Download);
+                    .WithIconLeftBindText(IconNames.Download,
+                        nameof(CrispEmbedModelStatusViewModel.DownloadButtonText),
+                        nameof(CrispEmbedModelStatusViewModel.DownloadButtonAccessibleName));
                 button.Width = 140;
-                button.Bind(ContentControl.ContentProperty,
-                    new Binding(nameof(CrispEmbedModelStatusViewModel.DownloadButtonText)));
                 button.Bind(Button.CommandProperty,
                     new Binding(nameof(CrispEmbedModelStatusViewModel.DownloadCommand)));
 
